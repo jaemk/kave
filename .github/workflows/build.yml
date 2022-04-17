@@ -46,6 +46,6 @@ jobs:
           ${{ runner.os }}-
 
     #- run: cargo install cargo-readme
-    - run: ./test.sh
+    - run: ./bin/test.sh
       shell: bash
 
