@@ -29,8 +29,8 @@ chrono = "0.4"
 # https://docs.rs/dotenv/latest/dotenv/
 dotenv = "0.15"
 # encoding
-# https://docs.rs/hex/latest/hex/
-hex = "0.4"
+# https://docs.rs/base64/latest/base64/
+base64 = "0.13"
 # crypto primitives
 # https://docs.rs/ring/latest/ring/
 ring = "0.16"

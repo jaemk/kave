@@ -42,7 +42,7 @@ pub fn hmac_sign_with_key(s: &str, key: &str) -> String {
     // using a 32 byte key
     let s_key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key.as_bytes());
     let tag = ring::hmac::sign(&s_key, s.as_bytes());
-    hex::encode(&tag)
+    base64::encode(&tag)
 }
 
 pub fn hmac_verify(text: &str, sig: &str) -> bool {
@@ -50,7 +50,7 @@ pub fn hmac_verify(text: &str, sig: &str) -> bool {
 }
 
 pub fn hmac_verify_with_key(text: &str, sig: &str, key: &str) -> bool {
-    let sig = hex::decode(sig);
+    let sig = base64::decode(sig);
     let sig = if let Ok(sig) = sig {
         sig
     } else {
@@ -163,9 +163,9 @@ pub fn encrypt_with_key(s: &str, key: &str) -> crate::Result<Enc> {
     let salt = new_pw_salt().map_err(|_| "error generating salt")?;
     let b = encrypt_bytes(s.as_bytes(), &nonce, key.as_bytes(), &salt)
         .map_err(|_| "encryption error")?;
-    let value = hex::encode(&b);
-    let nonce = hex::encode(&nonce);
-    let salt = hex::encode(&salt);
+    let value = base64::encode(&b);
+    let nonce = base64::encode(&nonce);
+    let salt = base64::encode(&salt);
     Ok(Enc { value, nonce, salt })
 }
 
@@ -174,9 +174,9 @@ pub fn decrypt(enc: &Enc) -> crate::Result<String> {
 }
 
 pub fn decrypt_with_key(enc: &Enc, key: &str) -> crate::Result<String> {
-    let nonce = hex::decode(&enc.nonce).map_err(|_| "nonce hex decode error")?;
-    let salt = hex::decode(&enc.salt).map_err(|_| "salt hex decode error")?;
-    let mut value = hex::decode(&enc.value).map_err(|_| "value hex decode error")?;
+    let nonce = base64::decode(&enc.nonce).map_err(|_| "nonce base64 decode error")?;
+    let salt = base64::decode(&enc.salt).map_err(|_| "salt base64 decode error")?;
+    let mut value = base64::decode(&enc.value).map_err(|_| "value base64 decode error")?;
     let bytes = decrypt_bytes(value.as_mut_slice(), &nonce, key.as_bytes(), &salt)
         .map_err(|_| "encryption error")?;
     let s = String::from_utf8(bytes.to_owned()).map_err(|_| "error decrypting bytes")?;
