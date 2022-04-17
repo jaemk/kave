@@ -182,4 +182,3 @@ pub fn decrypt_with_key(enc: &Enc, key: &str) -> crate::Result<String> {
     let s = String::from_utf8(bytes.to_owned()).map_err(|_| "error decrypting bytes")?;
     Ok(s)
 }
-
