@@ -1,0 +1,41 @@
+[package]
+name = "unifykv"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+# cli arg parser
+# https://github.com/clap-rs/clap
+clap = { version = "3", features = ["cargo"] }
+# async io
+# https://docs.rs/tokio/latest/tokio/
+# https://tokio.rs/tokio/tutorial/hello-tokio
+tokio = { version = "1", features = ["full"]}
+# error conveniences
+# https://docs.rs/thiserror/latest/thiserror/
+thiserror = "1"
+# global static values
+# https://docs.rs/lazy_static/latest/lazy_static/
+lazy_static = "1"
+# structured logging
+# https://docs.rs/tracing/latest/tracing/
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "ansi", "fmt", "std", "json"] }
+# date / time
+# https://docs.rs/chrono/latest/chrono/
+chrono = "0.4"
+# https://docs.rs/dotenv/latest/dotenv/
+dotenv = "0.15"
+# encoding
+# https://docs.rs/hex/latest/hex/
+hex = "0.4"
+# crypto primitives
+# https://docs.rs/ring/latest/ring/
+ring = "0.16"
+# de/serialization
+# https://docs.rs/serde/latest/serde/
+serde = { version = "1", features = ["derive"] }
+# https://docs.serde.rs/serde_json/
+serde_json = "1"
