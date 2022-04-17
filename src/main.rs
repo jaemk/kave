@@ -5,33 +5,39 @@ async fn run() -> Result<()> {
 
     tracing::info!("initializing");
 
-    let (app_shutdown_send, mut app_shutdown_recv) = tokio::sync::mpsc::unbounded_channel();
+    let (svr_shutdown_send, mut svr_shutdown_recv) = tokio::sync::mpsc::unbounded_channel();
     let (sig_shutdown_send, sig_shutdown_recv) = tokio::sync::mpsc::unbounded_channel();
 
-    let svr = Server::new(app_shutdown_send, sig_shutdown_recv);
+    let svr = Server::new(svr_shutdown_send, sig_shutdown_recv);
     tracing::info!("spawning server");
     tokio::spawn(async move { svr.start().await });
     tracing::info!("server spawned");
 
-    tokio::select! {
+    let server_initiated = tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("handling sigint");
             sig_shutdown_send.send(true).expect("error sending sigint shutdown signal");
+            false
         },
-        _ = app_shutdown_recv.recv() => {},
-    }
-    tracing::info!("shutdown initiated, waiting for server app shutdown signal");
+        _ = svr_shutdown_recv.recv() => {
+            true
+        },
+    };
 
-    if tokio::time::timeout(std::time::Duration::from_secs(5), app_shutdown_recv.recv())
-        .await
-        .is_err()
-    {
-        return Err("server failed to shutdown within 5s timeout".into());
+    if !server_initiated {
+        tracing::info!("shutdown initiated, waiting for server shutdown signal");
+
+        if tokio::time::timeout(std::time::Duration::from_secs(5), svr_shutdown_recv.recv())
+            .await
+            .is_err()
+        {
+            return Err("server failed to shutdown within 5s timeout".into());
+        }
     }
     Ok(())
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() {
     if let Err(e) = run().await {
         eprintln!("Error: {e}");
