@@ -1,12 +1,5 @@
-mod config;
-mod crypto;
-mod error;
+use kave::{config::LogFormat, Result, CONFIG};
 
-use crate::error::Result;
-
-lazy_static::lazy_static! {
-    pub static ref CONFIG: config::Config = config::Config::load();
-}
 async fn run() -> Result<()> {
     setup()?;
 
@@ -45,17 +38,17 @@ fn setup() -> Result<()> {
         .value_of("log_level")
         .unwrap_or(CONFIG.log_level.as_str());
     let log_format = match matches.value_of("log_format") {
-        Some(f) => f.parse::<crate::config::LogFormat>()?,
+        Some(f) => f.parse::<LogFormat>()?,
         None => CONFIG.log_format,
     };
 
     let filter = tracing_subscriber::filter::EnvFilter::new(log_level);
     let sub = tracing_subscriber::fmt().with_env_filter(filter);
     match log_format {
-        crate::config::LogFormat::Json => {
+        LogFormat::Json => {
             sub.json().init();
         }
-        crate::config::LogFormat::Pretty => {
+        LogFormat::Pretty => {
             sub.init();
         }
     }
