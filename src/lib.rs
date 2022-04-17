@@ -1,6 +1,7 @@
 pub mod config;
 pub mod crypto;
 pub mod error;
+pub mod server;
 
 pub use config::Config;
 pub use error::{Error, Result};

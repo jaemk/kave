@@ -1,9 +1,33 @@
-use kave::{config::LogFormat, Result, CONFIG};
+use kave::{config::LogFormat, server::Server, Result, CONFIG};
 
 async fn run() -> Result<()> {
     setup()?;
 
-    tracing::info!("running");
+    tracing::info!("initializing");
+
+    let (app_shutdown_send, mut app_shutdown_recv) = tokio::sync::mpsc::unbounded_channel();
+    let (sig_shutdown_send, sig_shutdown_recv) = tokio::sync::mpsc::unbounded_channel();
+
+    let svr = Server::new(app_shutdown_send, sig_shutdown_recv);
+    tracing::info!("spawning server");
+    tokio::spawn(async move { svr.start().await });
+    tracing::info!("server spawned");
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("handling sigint");
+            sig_shutdown_send.send(true).expect("error sending sigint shutdown signal");
+        },
+        _ = app_shutdown_recv.recv() => {},
+    }
+    tracing::info!("shutdown initiated, waiting for server app shutdown signal");
+
+    if tokio::time::timeout(std::time::Duration::from_secs(5), app_shutdown_recv.recv())
+        .await
+        .is_err()
+    {
+        return Err("server failed to shutdown within 5s timeout".into());
+    }
     Ok(())
 }
 
