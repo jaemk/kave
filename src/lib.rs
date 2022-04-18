@@ -6,6 +6,9 @@ pub mod server;
 pub use config::Config;
 pub use error::{Error, Result};
 
-lazy_static::lazy_static! {
-    pub static ref CONFIG: config::Config = config::Config::load();
+use cached::proc_macro::once;
+
+#[once]
+pub fn get_config() -> Config {
+    config::Config::load()
 }

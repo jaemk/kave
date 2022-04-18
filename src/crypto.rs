@@ -5,7 +5,7 @@ Crypto things
 use ring::aead::BoundKey;
 use ring::pbkdf2;
 
-use crate::CONFIG;
+use crate::get_config;
 use std::num::NonZeroU32;
 
 /// Return a `Vec` of secure random bytes of size `n`
@@ -36,7 +36,7 @@ pub fn derive_password_hash(pw: &[u8], salt: &[u8]) -> [u8; ring::digest::SHA512
 }
 
 pub fn hmac_sign(s: &str) -> String {
-    hmac_sign_with_key(s, &crate::CONFIG.signing_key)
+    hmac_sign_with_key(s, &get_config().signing_key)
 }
 pub fn hmac_sign_with_key(s: &str, key: &str) -> String {
     // using a 32 byte key
@@ -46,7 +46,7 @@ pub fn hmac_sign_with_key(s: &str, key: &str) -> String {
 }
 
 pub fn hmac_verify(text: &str, sig: &str) -> bool {
-    hmac_verify_with_key(text, sig, &crate::CONFIG.signing_key)
+    hmac_verify_with_key(text, sig, &get_config().signing_key)
 }
 
 pub fn hmac_verify_with_key(text: &str, sig: &str, key: &str) -> bool {
@@ -155,7 +155,7 @@ pub struct Enc {
 }
 
 pub fn encrypt(s: &str) -> crate::Result<Enc> {
-    encrypt_with_key(s, &CONFIG.encryption_key)
+    encrypt_with_key(s, &get_config().encryption_key)
 }
 
 pub fn encrypt_with_key(s: &str, key: &str) -> crate::Result<Enc> {
@@ -170,7 +170,7 @@ pub fn encrypt_with_key(s: &str, key: &str) -> crate::Result<Enc> {
 }
 
 pub fn decrypt(enc: &Enc) -> crate::Result<String> {
-    decrypt_with_key(enc, &CONFIG.encryption_key)
+    decrypt_with_key(enc, &get_config().encryption_key)
 }
 
 pub fn decrypt_with_key(enc: &Enc, key: &str) -> crate::Result<String> {

@@ -1,5 +1,6 @@
 use crate::error::Error;
 fn env_or(k: &str, default: &str) -> String {
+    tracing::debug!("loading env var: {k:?}");
     std::env::var(k).unwrap_or_else(|_| default.to_string())
 }
 
@@ -21,10 +22,16 @@ impl std::str::FromStr for LogFormat {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Config {
     // host to listen on, defaults to localhost
     pub host: String,
-    pub port: u16,
+    pub client_port: u16,
+    pub cluster_port: u16,
+
+    pub seed_peers: Vec<String>,
+    pub cert_path: String,
+    pub key_path: String,
 
     pub log_level: String,
     pub log_format: LogFormat,
@@ -39,7 +46,17 @@ impl Config {
     pub fn load() -> Self {
         Self {
             host: env_or("HOST", "localhost"),
-            port: env_or("PORT", "3003").parse().expect("invalid port"),
+            client_port: env_or("CLIENT_PORT", "7719").parse().expect("invalid port"),
+            cluster_port: env_or("CLUSTER_PORT", "7720")
+                .parse()
+                .expect("invalid port"),
+            seed_peers: env_or("SEED_PEERS", "")
+                .trim()
+                .split(',')
+                .map(String::from)
+                .collect::<Vec<String>>(),
+            cert_path: env_or("CERT_PATH", "certs/cert.pem"),
+            key_path: env_or("KEY_PATH", "certs/key.pem"),
             log_level: env_or("LOG_LEVEL", "info"),
             log_format: env_or("LOG_FORMAT", "pretty")
                 .parse()
@@ -48,16 +65,10 @@ impl Config {
             signing_key: env_or("SIGNING_KEY", "01234567890123456789012345678901"),
         }
     }
-    pub fn initialize(&self) {
-        use crate::CONFIG;
-        tracing::info!(
-            host = %CONFIG.host,
-            port = %CONFIG.port,
-            log_level = %CONFIG.log_level,
-            "initialized config",
-        );
+    pub fn get_cluster_addr(&self) -> String {
+        format!("{}:{}", self.host, self.cluster_port)
     }
-    pub fn get_host_port(&self) -> String {
-        format!("{}:{}", self.host, self.port)
+    pub fn get_client_addr(&self) -> String {
+        format!("{}:{}", self.host, self.client_port)
     }
 }
