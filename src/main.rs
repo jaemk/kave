@@ -1,14 +1,43 @@
-use kave::{config::LogFormat, server::Server, Result, CONFIG};
+use kave::{config::LogFormat, get_config, server::Server, Result};
 
 async fn run() -> Result<()> {
     setup()?;
+
+    let config = get_config();
+    tracing::info!(
+        "loading ssl certificates: {}, {}",
+        config.cert_path,
+        config.key_path
+    );
+
+    let certs: Vec<tokio_rustls::rustls::Certificate> = rustls_pemfile::certs(
+        &mut std::io::BufReader::new(std::fs::File::open(&config.cert_path)?),
+    )
+    .map_err(|_| "invalid cert file")
+    .map(|mut certs| {
+        certs
+            .drain(..)
+            .map(tokio_rustls::rustls::Certificate)
+            .collect()
+    })?;
+
+    let keys: Vec<tokio_rustls::rustls::PrivateKey> = rustls_pemfile::rsa_private_keys(
+        &mut std::io::BufReader::new(std::fs::File::open(&config.key_path)?),
+    )
+    .map_err(|_| "invalid key file")
+    .map(|mut keys| {
+        keys.drain(..)
+            .map(tokio_rustls::rustls::PrivateKey)
+            .collect()
+    })?;
+    tracing::info!("found {} certs, {} keys", certs.len(), keys.len());
 
     tracing::info!("initializing");
 
     let (svr_shutdown_send, mut svr_shutdown_recv) = tokio::sync::mpsc::unbounded_channel();
     let (sig_shutdown_send, sig_shutdown_recv) = tokio::sync::mpsc::unbounded_channel();
 
-    let svr = Server::new(svr_shutdown_send, sig_shutdown_recv);
+    let svr = Server::new(svr_shutdown_send, sig_shutdown_recv, certs, keys);
     tracing::info!("spawning server");
     tokio::spawn(async move { svr.start().await });
     tracing::info!("server spawned");
@@ -60,16 +89,14 @@ fn setup() -> Result<()> {
         (r.as_ref().ok().map(std::clone::Clone::clone), r.err())
     };
 
-    // force the config global to load
-    CONFIG.initialize();
-
+    let config = get_config();
     // figure out log level and format
     let log_level = matches
         .value_of("log_level")
-        .unwrap_or(CONFIG.log_level.as_str());
+        .unwrap_or(config.log_level.as_str());
     let log_format = match matches.value_of("log_format") {
         Some(f) => f.parse::<LogFormat>()?,
-        None => CONFIG.log_format,
+        None => config.log_format,
     };
 
     let filter = tracing_subscriber::filter::EnvFilter::new(log_level);

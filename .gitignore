@@ -1,2 +1,7 @@
 /target
 .env
+*.pem
+
+certs/*
+!certs/.gitkeep
+

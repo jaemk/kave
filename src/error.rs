@@ -2,6 +2,9 @@
 pub enum Error {
     #[error("{0}")]
     E(String),
+
+    #[error("io error: {0}")]
+    IO(#[from] std::io::Error),
 }
 impl From<&str> for Error {
     fn from(s: &str) -> Error {
