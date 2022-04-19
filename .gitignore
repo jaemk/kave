@@ -4,4 +4,9 @@
 
 certs/*
 !certs/.gitkeep
+!certs/defaults
+certs/defaults/*
+!certs/defaults/key.pem
+!certs/defaults/cert.pem
+!certs/defaults/public-key.pem
 

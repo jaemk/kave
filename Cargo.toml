@@ -15,7 +15,7 @@ clap = { version = "3", features = ["cargo"] }
 tokio = { version = "1", features = ["full"]}
 # tokio tls support
 # https://github.com/tokio-rs/tls/tree/master/tokio-rustls
-tokio-rustls = "0.23"
+tokio-rustls = { version = "0.23", features = ["dangerous_configuration"] }
 # pem file parser to load ssl key/cert files
 # https://github.com/rustls/pemfile
 rustls-pemfile = "1"
