@@ -1,4 +1,9 @@
-use kave::{config::LogFormat, get_config, server::Server, Result};
+use kave::{
+    config::LogFormat,
+    get_config,
+    server::{load_certs, load_keys, Server},
+    Result,
+};
 
 async fn run() -> Result<()> {
     setup()?;
@@ -10,39 +15,19 @@ async fn run() -> Result<()> {
         config.key_path
     );
 
-    let certs: Vec<tokio_rustls::rustls::Certificate> = rustls_pemfile::certs(
-        &mut std::io::BufReader::new(std::fs::File::open(&config.cert_path)?),
-    )
-    .map_err(|_| "invalid cert file")
-    .map(|mut certs| {
-        certs
-            .drain(..)
-            .map(tokio_rustls::rustls::Certificate)
-            .collect()
-    })?;
-
-    let keys: Vec<tokio_rustls::rustls::PrivateKey> = rustls_pemfile::rsa_private_keys(
-        &mut std::io::BufReader::new(std::fs::File::open(&config.key_path)?),
-    )
-    .map_err(|_| "invalid key file")
-    .map(|mut keys| {
-        keys.drain(..)
-            .map(tokio_rustls::rustls::PrivateKey)
-            .collect()
-    })?;
-    tracing::info!("found {} certs, {} keys", certs.len(), keys.len());
+    let certs = load_certs(&config.cert_path)?;
+    let keys = load_keys(&config.key_path)?;
+    tracing::debug!("found {} certs, {} keys", certs.len(), keys.len());
 
     tracing::info!("initializing");
-
     let (svr_shutdown_send, mut svr_shutdown_recv) = tokio::sync::mpsc::unbounded_channel();
     let (sig_shutdown_send, sig_shutdown_recv) = tokio::sync::mpsc::unbounded_channel();
 
     let svr = Server::new(svr_shutdown_send, sig_shutdown_recv, certs, keys);
-    tracing::info!("spawning server");
     tokio::spawn(async move { svr.start().await });
     tracing::info!("server spawned");
 
-    let server_initiated = tokio::select! {
+    let server_initiated_shutdown = tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("handling sigint");
             sig_shutdown_send.send(true).expect("error sending sigint shutdown signal");
@@ -53,7 +38,7 @@ async fn run() -> Result<()> {
         },
     };
 
-    if !server_initiated {
+    if !server_initiated_shutdown {
         tracing::info!("shutdown initiated, waiting for server shutdown signal");
 
         if tokio::time::timeout(std::time::Duration::from_secs(5), svr_shutdown_recv.recv())
@@ -93,7 +78,7 @@ fn setup() -> Result<()> {
     // figure out log level and format
     let log_level = matches
         .value_of("log_level")
-        .unwrap_or(config.log_level.as_str());
+        .unwrap_or_else(|| config.log_level.as_str());
     let log_format = match matches.value_of("log_format") {
         Some(f) => f.parse::<LogFormat>()?,
         None => config.log_format,

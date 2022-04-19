@@ -1,5 +1,8 @@
 use crate::error::Result;
 use crate::get_config;
+use std::fs::File;
+use std::io::BufReader;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{copy, split, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -7,8 +10,24 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_rustls::rustls::{self, Certificate, PrivateKey};
 use tokio_rustls::TlsAcceptor;
 
+pub fn load_certs<P: AsRef<Path>>(p: P) -> Result<Vec<Certificate>> {
+    let certs: Vec<Certificate> =
+        rustls_pemfile::certs(&mut BufReader::new(File::open(p.as_ref())?))
+            .map_err(|_| format!("invalid cert file: {:?}", p.as_ref()))
+            .map(|mut certs| certs.drain(..).map(Certificate).collect())?;
+    Ok(certs)
+}
+
+pub fn load_keys<P: AsRef<Path>>(p: P) -> Result<Vec<PrivateKey>> {
+    let keys: Vec<PrivateKey> =
+        rustls_pemfile::rsa_private_keys(&mut BufReader::new(File::open(p.as_ref())?))
+            .map_err(|_| format!("invalid key file: {:?}", p.as_ref()))
+            .map(|mut keys| keys.drain(..).map(PrivateKey).collect())?;
+    Ok(keys)
+}
+
 /// Server to handle client requests
-struct ClientServer {
+pub struct ClientServer {
     // sender for this instance to signal that it has shutdown
     svr_shutdown_send: UnboundedSender<bool>,
     // receiver for this instance to be notified it should shutdown
@@ -17,7 +36,7 @@ struct ClientServer {
     keys: Vec<PrivateKey>,
 }
 impl ClientServer {
-    fn new(
+    pub fn new(
         svr_shutdown_send: UnboundedSender<bool>,
         sig_shutdown_recv: UnboundedReceiver<bool>,
         certs: Vec<Certificate>,
@@ -69,14 +88,14 @@ impl ClientServer {
                     });
                 },
                 _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => {
-                    tracing::debug!("client-server slept 500ms...");
+                    tracing::trace!("client-server slept 500ms...");
                 },
             }
         }
         Ok(())
     }
 
-    async fn start(self) {
+    pub async fn start(self) {
         tracing::info!("starting client-server");
         if let Err(e) = Self::_start(self.sig_shutdown_recv, self.certs, self.keys).await {
             tracing::error!("error starting client-server: {e}");
@@ -147,7 +166,7 @@ impl Server {
                 //
                 // todo: send heartbeat on schedule?
                 _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => {
-                    tracing::debug!("server slept 500ms...");
+                    tracing::trace!("server slept 500ms...");
                 },
                 _ = client_svr_shutdown_recv.recv() => {
                     tracing::info!("client-server shutdown, also shutting down");
