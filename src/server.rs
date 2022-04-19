@@ -93,7 +93,7 @@ impl ClientServer {
                 stream_peer_addr_res = listener.accept() => {
                     let acceptor = acceptor.clone();
                     tokio::spawn(async move {
-                        tracing::debug!("CONNECTED");
+                        tracing::info!("CONNECTED");
                         let (stream, peer_addr) = stream_peer_addr_res.expect("error accepting tls, todo don't panic");
                         let stream = acceptor.accept(stream).await.expect("error accepting stream, todo don't panic");
                         let (mut reader, mut writer) = split(stream);
