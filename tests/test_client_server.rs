@@ -75,7 +75,8 @@ async fn connect(addr: &str) -> TlsStream<TcpStream> {
         .await
         .map_err(|e| format!("{e} error connecting to test address: {}", addr))
         .unwrap();
-    // need to just pass something that a valid domain name
+
+    // need to pass something that's a valid domain name, but it doesn't matter what it is
     let domain = rustls::ServerName::try_from("bread.com").expect("error parsing host");
     let stream = connector
         .connect(domain, stream)
