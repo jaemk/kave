@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::io::{copy, split, AsyncWriteExt};
+use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_rustls::rustls::{self, Certificate, PrivateKey};
@@ -34,6 +34,7 @@ pub struct ClientServer {
     sig_shutdown_recv: UnboundedReceiver<bool>,
     certs: Vec<Certificate>,
     keys: Vec<PrivateKey>,
+    port: Option<u16>,
 }
 impl ClientServer {
     pub fn new(
@@ -47,13 +48,20 @@ impl ClientServer {
             sig_shutdown_recv,
             certs,
             keys,
+            port: None,
         }
+    }
+
+    pub fn set_port(&mut self, port: u16) -> &mut Self {
+        self.port = Some(port);
+        self
     }
 
     async fn _start(
         sig_shutdown_recv: UnboundedReceiver<bool>,
         certs: Vec<Certificate>,
         mut keys: Vec<PrivateKey>,
+        port: Option<u16>,
     ) -> Result<()> {
         let mut external_sig_shutdown = sig_shutdown_recv;
 
@@ -64,7 +72,13 @@ impl ClientServer {
             .map_err(|err| format!("tls config error: {err}"))?;
         let acceptor = TlsAcceptor::from(Arc::new(config));
 
-        let addr = get_config().get_client_addr();
+        // todo: make this smarter
+        let addr = if let Some(port) = port {
+            format!("localhost:{port}")
+        } else {
+            get_config().get_client_addr()
+        };
+
         tracing::info!("listening for client requests on {addr}");
         let listener = TcpListener::bind(&addr).await?;
 
@@ -79,12 +93,21 @@ impl ClientServer {
                 stream_peer_addr_res = listener.accept() => {
                     let acceptor = acceptor.clone();
                     tokio::spawn(async move {
+                        tracing::debug!("CONNECTED");
                         let (stream, peer_addr) = stream_peer_addr_res.expect("error accepting tls, todo don't panic");
                         let stream = acceptor.accept(stream).await.expect("error accepting stream, todo don't panic");
                         let (mut reader, mut writer) = split(stream);
-                        let n = copy(&mut reader, &mut writer).await.expect("error echoing, todo don't panic");
-                        writer.flush().await.expect("error flusing, todo don't panic");
-                        println!("Echo: {} - {}", peer_addr, n);
+                        let mut buf = Vec::with_capacity(1024);
+                        loop {
+                            // todo: handle EOF error on client disconnects
+                            let n = reader.read_buf(&mut buf).await.expect("read error");
+                            tracing::debug!("MESSAGE::: {:?}", std::str::from_utf8(&buf).unwrap());
+                            writer.write_all(&buf).await.expect("write error");
+                            tracing::debug!("flushing");
+                            writer.flush().await.expect("error flusing, todo don't panic");
+                            tracing::debug!("flushed {n} bytes to {peer_addr:?}");
+                            buf.clear();
+                        }
                     });
                 },
                 _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => {
@@ -97,7 +120,8 @@ impl ClientServer {
 
     pub async fn start(self) {
         tracing::info!("starting client-server");
-        if let Err(e) = Self::_start(self.sig_shutdown_recv, self.certs, self.keys).await {
+        if let Err(e) = Self::_start(self.sig_shutdown_recv, self.certs, self.keys, self.port).await
+        {
             tracing::error!("error starting client-server: {e}");
         }
 
@@ -153,12 +177,12 @@ impl Server {
         tokio::spawn(async move { client_svr.start().await });
         tracing::info!("client-server spawned");
 
-        loop {
+        let server_initiated_shutdown = loop {
             tokio::select! {
                 _ = external_sig_shutdown.recv() => {
                     tracing::info!("server received sigint shutdown signal");
                     sig_client_shutdown_send.send(true).expect("error propagating shutdown signal to client-server");
-                    break;
+                    break false;
                 },
                 // todo: listen tcp for inter-node communication
                 //       gossip and leader election?
@@ -170,21 +194,24 @@ impl Server {
                 },
                 _ = client_svr_shutdown_recv.recv() => {
                     tracing::info!("client-server shutdown, also shutting down");
-                    break;
+                    break true;
                 },
             }
-        }
+        };
 
-        if tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            client_svr_shutdown_recv.recv(),
-        )
-        .await
-        .is_err()
-        {
-            tracing::error!(
-                "client-server failed to shutdown within 5s timeout. continuing shutdown"
-            );
+        if !server_initiated_shutdown {
+            tracing::info!("server shutdown initiated, waiting for client-server shutdown signal");
+            if tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                client_svr_shutdown_recv.recv(),
+            )
+            .await
+            .is_err()
+            {
+                tracing::error!(
+                    "client-server failed to shutdown within 5s timeout. continuing shutdown"
+                );
+            }
         }
 
         tracing::info!("server sending shutdown signal");
