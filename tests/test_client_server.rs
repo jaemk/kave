@@ -1,8 +1,9 @@
+use kave::client;
 use kave::server::{load_certs, load_keys, ClientServer};
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio_rustls::{client::TlsStream, rustls, TlsConnector};
+use tokio_rustls::client::TlsStream;
 
 fn new_client_server() -> (UnboundedSender<bool>, UnboundedReceiver<bool>, ClientServer) {
     let certs = load_certs("certs/defaults/cert.pem").expect("error loading default test certs");
@@ -25,64 +26,12 @@ fn new_client_server() -> (UnboundedSender<bool>, UnboundedReceiver<bool>, Clien
     )
 }
 
-struct NoVerifyVerifier;
-impl rustls::client::ServerCertVerifier for NoVerifyVerifier {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::Certificate,
-        _intermediates: &[rustls::Certificate],
-        _server_name: &rustls::client::ServerName,
-        _scts: &mut dyn Iterator<Item = &[u8]>,
-        _ocsp_response: &[u8],
-        _now: std::time::SystemTime,
-    ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::ServerCertVerified::assertion())
-    }
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::Certificate,
-        _dss: &rustls::internal::msgs::handshake::DigitallySignedStruct,
-    ) -> Result<rustls::client::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::Certificate,
-        _dss: &rustls::internal::msgs::handshake::DigitallySignedStruct,
-    ) -> Result<rustls::client::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::HandshakeSignatureValid::assertion())
-    }
-}
-
 /// create a new tls stream to a given address
 async fn connect(addr: &str) -> TlsStream<TcpStream> {
-    // we need to build a client config that doesn't verify anything
-    // because rustls defaults to being totally strict about cert verification
-    let mut config = rustls::ClientConfig::builder()
-        .with_safe_defaults()
-        .with_root_certificates(rustls::RootCertStore::empty())
-        .with_no_client_auth();
-    // the part where we disable verification
-    config
-        .dangerous()
-        .set_certificate_verifier(std::sync::Arc::new(NoVerifyVerifier {}));
-
-    let connector = TlsConnector::from(std::sync::Arc::new(config));
-    let stream = TcpStream::connect(&addr)
+    let certs = load_certs("certs/defaults/cert.pem").expect("error loading default test certs");
+    client::connect(addr, certs)
         .await
-        .map_err(|e| format!("{e} error connecting to test address: {}", addr))
-        .unwrap();
-
-    // need to pass something that's a valid domain name, but it doesn't matter what it is
-    let domain = rustls::ServerName::try_from("bread.com").expect("error parsing host");
-    let stream = connector
-        .connect(domain, stream)
-        .await
-        .expect("error connecting");
-    stream
+        .expect("error connecting to test addr")
 }
 
 /// init logger and other stuff
