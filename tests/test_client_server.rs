@@ -1,9 +1,9 @@
-use kave::client;
 use kave::server::{load_certs, load_keys, ClientServer};
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio_rustls::client::TlsStream;
+
+#[macro_use]
+mod utils;
 
 fn new_client_server() -> (UnboundedSender<bool>, UnboundedReceiver<bool>, ClientServer) {
     let certs = load_certs("certs/defaults/cert.pem").expect("error loading default test certs");
@@ -26,26 +26,6 @@ fn new_client_server() -> (UnboundedSender<bool>, UnboundedReceiver<bool>, Clien
     )
 }
 
-/// create a new tls stream to a given address
-async fn connect(addr: &str) -> TlsStream<TcpStream> {
-    let certs = load_certs("certs/defaults/cert.pem").expect("error loading default test certs");
-    client::connect(addr, certs)
-        .await
-        .expect("error connecting to test addr")
-}
-
-/// init logger and other stuff
-macro_rules! init {
-    () => {{
-        init!(std::env::var("LOG_LEVEL").unwrap_or_else(|_| "error".to_string()));
-    }};
-    ($log_level:expr) => {{
-        let filter = tracing_subscriber::filter::EnvFilter::new($log_level);
-        let sub = tracing_subscriber::fmt().with_env_filter(filter);
-        sub.init();
-    }};
-}
-
 /// create a new client server and wait for it start
 macro_rules! start_client_server {
     ($addr:expr) => {{
@@ -60,9 +40,11 @@ macro_rules! start_client_server {
 #[tokio::test]
 async fn test_client_server_basic() {
     init!();
-    let (shutdown_send, mut shutdown_recv) = start_client_server!("localhost:7333");
+    let (shutdown_send, mut shutdown_recv) = start_client_server!("localhost:7310");
 
-    let stream = connect("localhost:7333").await;
+    let stream = utils::connect("localhost:7310")
+        .await
+        .expect("error connecting to test addr");
     let (mut reader, mut writer) = split(stream);
 
     writer
