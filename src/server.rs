@@ -105,7 +105,7 @@ impl ClientServer {
             tracing::debug!(
                 session = id,
                 "MESSAGE:::<{:?}>",
-                std::str::from_utf8(&buf).unwrap_or_else(|_| "unable to decode, invalid utf")
+                std::str::from_utf8(&buf).unwrap_or("unable to decode, invalid utf")
             );
             writer
                 .write_all(&buf)
