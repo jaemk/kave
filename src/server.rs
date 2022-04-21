@@ -42,7 +42,7 @@ pub struct ClientServer {
     sig_shutdown_recv: UnboundedReceiver<bool>,
     certs: Vec<Certificate>,
     keys: Vec<PrivateKey>,
-    port: Option<u16>,
+    addr: Option<String>,
 }
 impl ClientServer {
     pub fn new(
@@ -56,12 +56,12 @@ impl ClientServer {
             sig_shutdown_recv,
             certs,
             keys,
-            port: None,
+            addr: None,
         }
     }
 
-    pub fn set_port(&mut self, port: u16) -> &mut Self {
-        self.port = Some(port);
+    pub fn set_addr<S: Into<String>>(&mut self, addr: S) -> &mut Self {
+        self.addr = Some(addr.into());
         self
     }
 
@@ -126,7 +126,7 @@ impl ClientServer {
         sig_shutdown_recv: UnboundedReceiver<bool>,
         certs: Vec<Certificate>,
         mut keys: Vec<PrivateKey>,
-        port: Option<u16>,
+        addr: Option<String>,
     ) -> Result<()> {
         let mut external_sig_shutdown = sig_shutdown_recv;
 
@@ -137,13 +137,7 @@ impl ClientServer {
             .map_err(|err| format!("tls config error: {err}"))?;
         let acceptor = TlsAcceptor::from(Arc::new(config));
 
-        // todo: make this smarter
-        let addr = if let Some(port) = port {
-            format!("localhost:{port}")
-        } else {
-            get_config().get_client_addr()
-        };
-
+        let addr = addr.unwrap_or_else(|| get_config().get_client_addr());
         tracing::info!("listening for client requests on {addr}");
         let listener = TcpListener::bind(&addr).await?;
 
@@ -153,8 +147,6 @@ impl ClientServer {
                     tracing::info!("client-server received sigint shutdown signal");
                     break;
                 },
-                // todo: clean this up... move to separate function, don't panic, and handle
-                //       disconnects
                 stream_peer_addr_res = listener.accept() => {
                     let acceptor = acceptor.clone();
                     tokio::spawn(async move {
@@ -173,7 +165,7 @@ impl ClientServer {
 
     pub async fn start(self) {
         tracing::info!("starting client-server");
-        if let Err(e) = Self::_start(self.sig_shutdown_recv, self.certs, self.keys, self.port).await
+        if let Err(e) = Self::_start(self.sig_shutdown_recv, self.certs, self.keys, self.addr).await
         {
             tracing::error!("error starting client-server: {e}");
         }

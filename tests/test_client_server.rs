@@ -48,9 +48,9 @@ macro_rules! init {
 
 /// create a new client server and wait for it start
 macro_rules! start_client_server {
-    ($port:expr) => {{
+    ($addr:expr) => {{
         let (shutdown_send, shutdown_recv, mut cs) = new_client_server();
-        cs.set_port($port);
+        cs.set_addr($addr);
         tokio::spawn(async move { cs.start().await });
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         (shutdown_send, shutdown_recv)
@@ -60,7 +60,7 @@ macro_rules! start_client_server {
 #[tokio::test]
 async fn test_client_server_basic() {
     init!();
-    let (shutdown_send, mut shutdown_recv) = start_client_server!(7333);
+    let (shutdown_send, mut shutdown_recv) = start_client_server!("localhost:7333");
 
     let stream = connect("localhost:7333").await;
     let (mut reader, mut writer) = split(stream);
