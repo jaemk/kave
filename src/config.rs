@@ -24,12 +24,18 @@ impl std::str::FromStr for LogFormat {
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    // host to listen on, defaults to localhost
-    pub host: String,
+    // host to listen on for client request, defaults to 0.0.0.0:7719
+    pub client_host: String,
     pub client_port: u16,
+    // addr to listen on for cluster request, defaults to 0.0.0.0:7720
+    pub cluster_host: String,
     pub cluster_port: u16,
 
+    // list of addresses to seed peer discovery
     pub seed_peers: Vec<String>,
+
+    // path to files containing certificates and private keys
+    // that the server should use for ssl
     pub cert_path: String,
     pub key_path: String,
 
@@ -45,8 +51,9 @@ pub struct Config {
 impl Config {
     pub fn load() -> Self {
         Self {
-            host: env_or("HOST", "localhost"),
+            client_host: env_or("CLIENT_HOST", "0.0.0.0"),
             client_port: env_or("CLIENT_PORT", "7719").parse().expect("invalid port"),
+            cluster_host: env_or("CLUSTER_HOST", "0.0.0.0"),
             cluster_port: env_or("CLUSTER_PORT", "7720")
                 .parse()
                 .expect("invalid port"),
@@ -66,9 +73,9 @@ impl Config {
         }
     }
     pub fn get_cluster_addr(&self) -> String {
-        format!("{}:{}", self.host, self.cluster_port)
+        format!("{}:{}", self.cluster_host, self.cluster_port)
     }
     pub fn get_client_addr(&self) -> String {
-        format!("{}:{}", self.host, self.client_port)
+        format!("{}:{}", self.client_host, self.client_port)
     }
 }
