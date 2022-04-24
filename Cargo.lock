@@ -358,12 +358,14 @@ dependencies = [
 name = "kave"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64",
  "cached",
  "chrono",
  "clap",
  "dotenv",
  "lazy_static",
+ "parking_lot",
  "ring",
  "rustls-pemfile",
  "serde",

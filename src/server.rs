@@ -1,5 +1,6 @@
 use crate::error::Result;
 use crate::get_config;
+use crate::store::Store;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
@@ -34,63 +35,68 @@ macro_rules! uuid_with_ident {
     };
 }
 
-/// Server to handle client requests
-pub struct ClientServer {
-    // sender for this instance to signal that it has shutdown
-    svr_shutdown_send: UnboundedSender<bool>,
-    // receiver for this instance to be notified it should shutdown
-    sig_shutdown_recv: UnboundedReceiver<bool>,
-    certs: Vec<Certificate>,
-    keys: Vec<PrivateKey>,
-    addr: Option<String>,
+macro_rules! write_stream {
+    ($id:expr, $writer:expr, $buf:expr, $addr:expr) => {
+        $writer
+            .write_all($buf)
+            .await
+            .map_err(|e| format!("session={id} error writing to socket: {e}", id = $id))?;
+        $writer
+            .flush()
+            .await
+            .map_err(|e| format!("session={id} error flusing stream: {e}", id = $id))?;
+        tracing::debug!(
+            session = %$id,
+            "flushed {n} bytes to {peer_addr:?}",
+            n = $buf.len(),
+            peer_addr = $addr
+        );
+    };
 }
-impl ClientServer {
+
+pub struct Connection<S> {
+    id: String,
+    stream: tokio::net::TcpStream,
+    addr: std::net::SocketAddr,
+    acceptor: TlsAcceptor,
+    store: S,
+}
+impl<S: Store + Send + Sync + Clone + 'static> Connection<S> {
     pub fn new(
-        svr_shutdown_send: UnboundedSender<bool>,
-        sig_shutdown_recv: UnboundedReceiver<bool>,
-        certs: Vec<Certificate>,
-        keys: Vec<PrivateKey>,
+        id: String,
+        stream: tokio::net::TcpStream,
+        addr: std::net::SocketAddr,
+        acceptor: TlsAcceptor,
+        store: S,
     ) -> Self {
         Self {
-            svr_shutdown_send,
-            sig_shutdown_recv,
-            certs,
-            keys,
-            addr: None,
+            id,
+            stream,
+            addr,
+            acceptor,
+            store,
         }
     }
 
-    pub fn set_addr<S: Into<String>>(&mut self, addr: S) -> &mut Self {
-        self.addr = Some(addr.into());
-        self
-    }
-
-    async fn handle_conn(
-        stream_peer_addr_res: std::result::Result<
-            (tokio::net::TcpStream, std::net::SocketAddr),
-            std::io::Error,
-        >,
-        acceptor: TlsAcceptor,
-    ) -> Result<()> {
-        uuid_with_ident!(id);
-        tracing::info!(session = id, "client connected");
-
-        let (stream, peer_addr) =
-            stream_peer_addr_res.map_err(|e| format!("session={id} error accepting tls: {e}"))?;
-        let stream = acceptor
-            .accept(stream)
+    pub async fn handle(mut self) -> Result<()> {
+        let id = self.id;
+        let stream = self
+            .acceptor
+            .accept(self.stream)
             .await
             .map_err(|e| format!("session={id} error accepting stream: {e}"))?;
+
         let (mut reader, mut writer) = split(stream);
         let mut buf = Vec::with_capacity(1024);
         'read: loop {
+            buf.clear();
             let n = match reader.read_buf(&mut buf).await {
                 Ok(n) => n,
                 Err(e) => {
                     use std::io::ErrorKind::*;
                     match e.kind() {
                         UnexpectedEof => {
-                            tracing::debug!(session = id, "EOF on socket, disconnecting");
+                            tracing::debug!(session = %id, "EOF on socket, disconnecting");
                             break 'read;
                         }
                         _ => {
@@ -103,10 +109,125 @@ impl ClientServer {
             };
 
             tracing::debug!(
-                session = id,
+                session = %id,
                 "CLIENT_MESSAGE:::<{:?}>",
                 std::str::from_utf8(&buf).unwrap_or("unable to decode, invalid utf")
             );
+
+            // TODO: Move protocol parsing to a separate type, and come up with a better format.
+            //       This is just enough to test sending commands from a client to a basic store.
+
+            // GET:3:KEY
+            // SET:3:KEY:5:VALUE
+            if buf.len() < 3 {
+                // pass
+            } else if &buf[0..3] == b"GET" {
+                tracing::info!("GET");
+                let mut i = 4;
+                let mut size = Vec::with_capacity(16);
+                while i < buf.len() && buf[i] != b':' {
+                    size.push(buf[i]);
+                    i += 1;
+                }
+                let size = match std::str::from_utf8(&size)
+                    .unwrap_or("unable to decode key len")
+                    .parse::<usize>()
+                {
+                    Ok(size) => size,
+                    Err(e) => {
+                        let s = format!("invalid key size: {e}\n");
+                        write_stream!(id, writer, s.as_bytes(), self.addr);
+                        continue 'read;
+                    }
+                };
+
+                i += 1;
+                let mut key = Vec::with_capacity(size);
+                while key.len() < size && i < buf.len() {
+                    key.push(buf[i]);
+                    i += 1;
+                }
+                let key = std::str::from_utf8(&key)
+                    .map_err(|e| format!("key {:?} is invalid utf: {e}", key))?;
+
+                tracing::info!("GET {key:?}");
+                let val = self.store.get(key).await.unwrap();
+                if let Some(mut val) = val {
+                    let prefix = format!("{}:", val.len());
+                    let mut prefix = prefix.as_bytes().to_vec();
+                    prefix.append(&mut val);
+                    prefix.push(b'\n');
+                    tracing::trace!("GET {key:?} {prefix:?}");
+                    write_stream!(id, writer, &prefix, self.addr);
+                } else {
+                    tracing::trace!("GET {key:?} null");
+                    write_stream!(id, writer, b"4:null\n", self.addr);
+                }
+                continue 'read;
+            } else if &buf[0..3] == b"SET" {
+                tracing::info!("SET");
+                let mut i = 4;
+                let mut size = Vec::with_capacity(16);
+                while i < buf.len() && buf[i] != b':' {
+                    size.push(buf[i]);
+                    i += 1;
+                }
+                let size = match std::str::from_utf8(&size)
+                    .unwrap_or("unable to decode key len")
+                    .parse::<usize>()
+                {
+                    Ok(size) => size,
+                    Err(e) => {
+                        let s = format!("invalid key size: {e}\n");
+                        write_stream!(id, writer, s.as_bytes(), self.addr);
+                        continue 'read;
+                    }
+                };
+
+                i += 1;
+                let mut key = Vec::with_capacity(size);
+                while key.len() < size && i < buf.len() {
+                    key.push(buf[i]);
+                    i += 1;
+                }
+                let key = std::str::from_utf8(&key)
+                    .map_err(|e| format!("key {:?} is invalid utf: {e}", key))?;
+
+                i += 1;
+                let mut size = Vec::with_capacity(16);
+                while i < buf.len() && buf[i] != b':' {
+                    size.push(buf[i]);
+                    i += 1;
+                }
+                let size = match std::str::from_utf8(&size)
+                    .unwrap_or("unable to decode key len")
+                    .parse::<usize>()
+                {
+                    Ok(size) => size,
+                    Err(e) => {
+                        let s = format!("invalid value size: {e}\n");
+                        write_stream!(id, writer, s.as_bytes(), self.addr);
+                        continue 'read;
+                    }
+                };
+
+                i += 1;
+                let mut val = Vec::with_capacity(size);
+                while val.len() < size && i < buf.len() {
+                    val.push(buf[i]);
+                    i += 1;
+                }
+
+                tracing::info!("SET {key:?}");
+                tracing::trace!("SET {key:?} {val:?}");
+                self.store.set(key, val.as_ref()).await.ok();
+                let len_v = val.len().to_string();
+                let res = format!("2:ok:{}:{}\n", len_v.len(), len_v);
+                write_stream!(id, writer, res.as_bytes(), self.addr);
+                continue 'read;
+            }
+            tracing::info!(session = %id, "no command found, echoing input");
+
             writer
                 .write_all(&buf)
                 .await
@@ -115,11 +236,64 @@ impl ClientServer {
                 .flush()
                 .await
                 .map_err(|e| format!("session={id} error flusing stream: {e}"))?;
-
-            tracing::debug!(session = id, "flushed {n} bytes to {peer_addr:?}");
-            buf.clear();
+            tracing::debug!(
+                session = %id,
+                "flushed {n} bytes to {peer_addr:?}",
+                peer_addr = self.addr
+            );
         }
         Ok(())
+    }
+}
+
+/// Server to handle client requests
+pub struct ClientServer<S> {
+    // sender for this instance to signal that it has shutdown
+    svr_shutdown_send: UnboundedSender<bool>,
+    // receiver for this instance to be notified it should shutdown
+    sig_shutdown_recv: UnboundedReceiver<bool>,
+    certs: Vec<Certificate>,
+    keys: Vec<PrivateKey>,
+    addr: Option<String>,
+    store: S,
+}
+impl<S: Store + Send + Sync + Clone + 'static> ClientServer<S> {
+    pub fn new(
+        svr_shutdown_send: UnboundedSender<bool>,
+        sig_shutdown_recv: UnboundedReceiver<bool>,
+        certs: Vec<Certificate>,
+        keys: Vec<PrivateKey>,
+        store: S,
+    ) -> Self {
+        Self {
+            svr_shutdown_send,
+            sig_shutdown_recv,
+            certs,
+            keys,
+            addr: None,
+            store,
+        }
+    }
+
+    pub fn set_addr<A: Into<String>>(&mut self, addr: A) -> &mut Self {
+        self.addr = Some(addr.into());
+        self
+    }
+
+    async fn handle_conn(
+        stream_peer_addr_res: std::result::Result<
+            (tokio::net::TcpStream, std::net::SocketAddr),
+            std::io::Error,
+        >,
+        acceptor: TlsAcceptor,
+        store: S,
+    ) -> Result<()> {
+        uuid_with_ident!(id);
+        tracing::info!(session = id, "client connected");
+        let (stream, peer_addr) =
+            stream_peer_addr_res.map_err(|e| format!("session={id} error accepting tls: {e}"))?;
+        let conn = Connection::new(id.to_string(), stream, peer_addr, acceptor, store);
+        conn.handle().await
     }
 
     async fn server_start(&mut self) -> Result<()> {
@@ -145,8 +319,9 @@ impl ClientServer {
                 },
                 stream_peer_addr_res = listener.accept() => {
                     let acceptor = acceptor.clone();
+                    let store = self.store.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = Self::handle_conn(stream_peer_addr_res, acceptor).await {
+                        if let Err(e) = Self::handle_conn(stream_peer_addr_res, acceptor, store).await {
                             tracing::error!("error handling client connection {e}");
                         }
                     });
@@ -175,7 +350,7 @@ impl ClientServer {
 /// Main entry point
 /// Manages inter-node communication and
 /// separately spawns a server to handle client requests
-pub struct Server {
+pub struct Server<S> {
     // sender for this instance to signal that it has shutdown
     svr_shutdown_send: UnboundedSender<bool>,
     // receiver for this instance to be notified it should shutdown
@@ -185,14 +360,16 @@ pub struct Server {
     addr: Option<String>,
     client_svr_addr: Option<String>,
     start_client_server: bool,
+    store: S,
 }
 
-impl Server {
+impl<S: Store + Clone + Send + Sync + 'static> Server<S> {
     pub fn new(
         svr_shutdown_send: UnboundedSender<bool>,
         sig_shutdown_recv: UnboundedReceiver<bool>,
         certs: Vec<Certificate>,
         keys: Vec<PrivateKey>,
+        store: S,
     ) -> Self {
         Self {
             svr_shutdown_send,
@@ -202,15 +379,16 @@ impl Server {
             addr: None,
             client_svr_addr: None,
             start_client_server: true,
+            store,
         }
     }
 
-    pub fn set_addr<S: Into<String>>(&mut self, addr: S) -> &mut Self {
+    pub fn set_addr<A: Into<String>>(&mut self, addr: A) -> &mut Self {
         self.addr = Some(addr.into());
         self
     }
 
-    pub fn set_client_server_addr<S: Into<String>>(&mut self, addr: S) -> &mut Self {
+    pub fn set_client_server_addr<A: Into<String>>(&mut self, addr: A) -> &mut Self {
         self.client_svr_addr = Some(addr.into());
         self
     }
@@ -356,6 +534,7 @@ impl Server {
                 sig_client_shutdown_recv,
                 self.certs.clone(),
                 self.keys.clone(),
+                self.store.clone(),
             );
             if let Some(ref client_svr_addr) = self.client_svr_addr {
                 client_svr.set_addr(client_svr_addr);

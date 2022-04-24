@@ -5,6 +5,9 @@ pub enum Error {
 
     #[error("io error: {0}")]
     IO(#[from] std::io::Error),
+
+    #[error("parseint error: {0}")]
+    ParseIntError(#[from] std::num::ParseIntError),
 }
 impl From<&str> for Error {
     fn from(s: &str) -> Error {
