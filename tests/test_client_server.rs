@@ -1,11 +1,16 @@
 use kave::server::{load_certs, load_keys, ClientServer};
+use kave::store::MemoryStore;
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 #[macro_use]
 mod utils;
 
-fn new_client_server() -> (UnboundedSender<bool>, UnboundedReceiver<bool>, ClientServer) {
+fn new_client_server() -> (
+    UnboundedSender<bool>,
+    UnboundedReceiver<bool>,
+    ClientServer<MemoryStore>,
+) {
     let certs = load_certs("certs/defaults/cert.pem").expect("error loading default test certs");
     let keys = load_keys("certs/defaults/key.pem").expect("error loading default test keys");
     let (client_svr_shutdown_send, client_svr_shutdown_recv) =
@@ -18,6 +23,7 @@ fn new_client_server() -> (UnboundedSender<bool>, UnboundedReceiver<bool>, Clien
         sig_client_shutdown_recv,
         certs,
         keys,
+        MemoryStore::new(100),
     );
     (
         sig_client_shutdown_send,
@@ -58,6 +64,53 @@ async fn test_client_server_basic() {
     let mut buf = vec![];
     reader.read_buf(&mut buf).await.expect("error reading");
     assert_eq!(buf, b"working!!!");
+
+    // send shutdown and assert that it actually shuts down
+    shutdown_send
+        .send(true)
+        .expect("error sending client-server shutdown");
+    tokio::time::timeout(std::time::Duration::from_secs(5), shutdown_recv.recv())
+        .await
+        .expect("client-server failed to shutdown");
+}
+
+#[tokio::test]
+async fn test_client_server_get_set() {
+    init!();
+    let (shutdown_send, mut shutdown_recv) = start_client_server!("localhost:7311");
+
+    let stream = utils::connect("localhost:7311")
+        .await
+        .expect("error connecting to test addr");
+    let (mut reader, mut writer) = split(stream);
+
+    // get non existing key
+    writer
+        .write_all(b"GET:5:abcdef")
+        .await
+        .expect("error writing");
+    let mut buf = vec![];
+    reader.read_buf(&mut buf).await.expect("error reading");
+    assert_eq!(buf, b"4:null\n");
+
+    // set missing key
+    writer
+        .write_all(b"SET:5:abcde:30:012345678901234567890123456789-this-should-be-ignored")
+        .await
+        .expect("error writing");
+    let mut buf = vec![];
+    reader.read_buf(&mut buf).await.expect("error reading");
+    assert_eq!(buf, b"2:ok:2:30\n");
+
+    // get previously set key
+    writer
+        .write_all(b"GET:5:abcde-this-should-be-ignored")
+        .await
+        .expect("error writing");
+    let mut buf = vec![];
+    reader.read_buf(&mut buf).await.expect("error reading");
+    // assert_eq!(std::str::from_utf8(&buf).unwrap(), "");
+    assert_eq!(buf, b"30:012345678901234567890123456789\n");
 
     // send shutdown and assert that it actually shuts down
     shutdown_send

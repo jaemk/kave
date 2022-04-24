@@ -1,17 +1,28 @@
 use kave::server::{load_certs, load_keys, Server};
+use kave::store::MemoryStore;
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 #[macro_use]
 mod utils;
 
-fn new_cluster_server() -> (UnboundedSender<bool>, UnboundedReceiver<bool>, Server) {
+fn new_cluster_server() -> (
+    UnboundedSender<bool>,
+    UnboundedReceiver<bool>,
+    Server<MemoryStore>,
+) {
     let certs = load_certs("certs/defaults/cert.pem").expect("error loading default test certs");
     let keys = load_keys("certs/defaults/key.pem").expect("error loading default test keys");
     let (svr_shutdown_send, svr_shutdown_recv) = tokio::sync::mpsc::unbounded_channel();
     let (sig_shutdown_send, sig_shutdown_recv) = tokio::sync::mpsc::unbounded_channel();
 
-    let svr = Server::new(svr_shutdown_send, sig_shutdown_recv, certs, keys);
+    let svr = Server::new(
+        svr_shutdown_send,
+        sig_shutdown_recv,
+        certs,
+        keys,
+        MemoryStore::new(100),
+    );
     (sig_shutdown_send, svr_shutdown_recv, svr)
 }
 
@@ -26,6 +37,9 @@ macro_rules! start_server {
         cs.set_addr($addr);
         if let Some(client_addr) = $client_addr {
             cs.set_client_server_addr(client_addr);
+            cs.set_start_client_server(true);
+        } else {
+            cs.set_start_client_server(false);
         }
         tokio::spawn(async move { cs.start().await });
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
