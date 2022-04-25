@@ -4,6 +4,7 @@
 
 certs/*
 !certs/.gitkeep
+!certs/openssl.cnf
 !certs/defaults
 certs/defaults/*
 !certs/defaults/key.pem
