@@ -22,8 +22,6 @@ impl MemoryStore {
         }
     }
 }
-unsafe impl Send for MemoryStore {}
-unsafe impl Sync for MemoryStore {}
 
 #[async_trait]
 impl Store for MemoryStore {
