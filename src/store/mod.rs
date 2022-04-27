@@ -40,10 +40,12 @@ where
 #[async_trait]
 pub trait Store {
     async fn get<K: AsRef<str> + Send>(&mut self, k: K) -> Result<Option<Vec<u8>>>;
+    /// Returns a vec with the previous values of the keys, if any
     async fn transact<'a, K: AsRef<str> + Send>(
         &mut self,
         transaction: Transaction<'a, K>,
-    ) -> Result<()>;
+    ) -> Result<Vec<Option<Vec<u8>>>>;
+}
 }
 
 /// A basic in memory store for testing
@@ -68,16 +70,21 @@ impl Store for MemoryStore {
     async fn transact<'a, K: AsRef<str> + Send>(
         &mut self,
         transaction: Transaction<'a, K>,
-    ) -> Result<()> {
+    ) -> Result<Vec<Option<Vec<u8>>>> {
         let mut data = self.data.lock().await;
+        let mut result = Vec::new();
         for instruction in transaction.instructions {
             match instruction {
                 TransactInstruction::Set(key, value) => {
+                    result.push(data.cache_get(&key.as_ref().to_string()).cloned());
                     data.cache_set(key.as_ref().to_string(), value.to_vec())
                 }
-                TransactInstruction::Delete(key) => data.cache_remove(&key.as_ref().to_string()),
+                TransactInstruction::Delete(key) => {
+                    result.push(data.cache_get(&key.as_ref().to_string()).cloned());
+                    data.cache_remove(&key.as_ref().to_string())
+                }
             };
         }
-        Ok(())
+        Ok(result)
     }
 }
