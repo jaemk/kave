@@ -57,8 +57,8 @@ async-trait = "0.1"
 # https://docs.rs/parking_lot/latest/parking_lot/
 parking_lot = "0.12"
 # a red-black tree implementation
-# https://docs.rs/rbtree/0.1.5/rbtree/
-rbtree = "0.1.5"
+# https://github.com/dbyr/rb_tree
+rb_tree = "0.5.0"
 # bloom filter implementation
 # https://docs.rs/bloom-filter-rs/0.1.0/bloom_filter_rs/
 bloom-filter-rs = "0.1.0"

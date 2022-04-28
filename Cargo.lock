@@ -389,7 +389,7 @@ dependencies = [
  "dotenv",
  "lazy_static",
  "parking_lot",
- "rbtree",
+ "rb_tree",
  "ring",
  "rustls-pemfile",
  "serde",
@@ -584,10 +584,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "rbtree"
-version = "0.1.5"
+name = "rb_tree"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c30302bfb88dd71dce9b3577ab7f607a246ecee387717e937d49466a6d4d4760"
+checksum = "e6724c78e033e1c4155b4d3f76593d09ad384739c6986c1addc2bd2f55b1aefe"
 
 [[package]]
 name = "redox_syscall"
