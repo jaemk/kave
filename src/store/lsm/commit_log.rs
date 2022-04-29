@@ -11,10 +11,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::{
-    store::{TransactInstruction, Transaction},
-    Error, Result,
-};
+use crate::{store::Transaction, Error, Result};
 
 pub struct CommitLog<'a> {
     log_path: &'a Path,
@@ -34,13 +31,13 @@ impl<'a> CommitLog<'a> {
             .await?
     }
 
-    fn encode_tx(instructions: &Vec<TransactInstruction>) -> Vec<u8> {
+    fn encode_tx(tx: &Transaction) -> Vec<u8> {
         let mut buf = Vec::new();
-        instructions.serialize(&mut Serializer::new(&mut buf));
+        tx.serialize(&mut Serializer::new(&mut buf));
         buf
     }
 
-    fn decode_tx(encoded: &[u8]) -> Result<Vec<TransactInstruction>> {
+    fn decode_tx(encoded: &[u8]) -> Result<Transaction> {
         let mut de = Deserializer::new(encoded);
         match Deserialize::deserialize(&mut de) {
             Ok(res) => Ok(res),
@@ -51,8 +48,7 @@ impl<'a> CommitLog<'a> {
     /// Writes a begin_transaction line to the commit log.
     pub async fn begin_transaction<'b>(&mut self, tx: Transaction<'b>) -> Result<()> {
         let mut bytes = b"begin_tx:".to_vec();
-        bytes.append(&mut tx.id.as_bytes().to_vec());
-        bytes.append(&mut Self::encode_tx(&tx.instructions));
+        bytes.append(&mut Self::encode_tx(&tx));
         let mut logfile = self.get_log_file().await?;
         logfile.write_all(&bytes).await?;
         // TODO this is expensive. Should we relax the durability guarantee a bit,

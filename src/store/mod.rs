@@ -16,9 +16,11 @@ pub enum TransactInstruction<'a>
     Delete(&'a str),
 }
 
+#[derive(Deserialize, Serialize)]
 pub struct Transaction<'a>
 {
     id: Uuid,
+    #[serde(borrow)]
     instructions: Vec<TransactInstruction<'a>>,
 }
 
