@@ -1,3 +1,5 @@
+mod commit_log;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -12,10 +14,10 @@ use crate::Result;
 /// A store backed by a [log-structured merge tree](http://www.benstopford.com/2015/02/14/log-structured-merge-trees)
 #[derive(Clone)]
 pub struct LSMStore {
-    inner: Arc<Mutex<LSMStoreBox>>,
+    data: Arc<Mutex<LSMStoreData>>,
 }
 
-struct LSMStoreBox {
+struct LSMStoreData {
     memtable: RBMap<String, Option<Vec<u8>>>,
     bloom_filter: BloomFilter<Murmur3>,
 }
@@ -23,7 +25,7 @@ struct LSMStoreBox {
 impl LSMStore {
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(Mutex::new(LSMStoreBox {
+            data: Arc::new(Mutex::new(LSMStoreData {
                 memtable: RBMap::new(),
                 // TODO what is the optimal number of items for the bloom filter?
                 bloom_filter: BloomFilter::optimal(Murmur3, 512, 0.01),
@@ -37,32 +39,32 @@ impl LSMStore {
 
 #[async_trait]
 impl Store for LSMStore {
-    async fn get<K: AsRef<str> + Send>(&mut self, k: K) -> Result<Option<Vec<u8>>> {
-        let store = self.inner.lock().await;
-        if !store.bloom_filter.contains(k.as_ref().as_bytes()) {
+    async fn get(&mut self, k: &str) -> Result<Option<Vec<u8>>> {
+        let store = self.data.lock().await;
+        if !store.bloom_filter.contains(k.as_bytes()) {
             return Ok(None);
         }
-        let mem_result = store.memtable.get(&k.as_ref().to_string());
+        let mem_result = store.memtable.get(&k.to_string());
         // TODO read from disk if value not found in memtable
         Ok(mem_result.unwrap().as_deref().map(|v| v.to_vec()))
     }
 
-    async fn transact<'a, K: AsRef<str> + Send>(
+    async fn transact<'a>(
         &mut self,
-        transaction: Transaction<'a, K>,
+        transaction: Transaction<'a>,
     ) -> Result<()> {
-        let mut store = self.inner.lock().await;
+        let mut store = self.data.lock().await;
         // TODO write begin_transaction to WAL
         for instruction in transaction.instructions {
             match instruction {
                 Set(key, value) => {
                     store
                         .memtable
-                        .insert(key.as_ref().to_string(), Some(value.to_vec()));
-                    store.bloom_filter.insert(key.as_ref().as_bytes());
+                        .insert(key.to_string(), Some(value.to_vec()));
+                    store.bloom_filter.insert(key.as_bytes());
                 }
                 Delete(key) => {
-                    store.memtable.insert(key.as_ref().to_string(), None);
+                    store.memtable.insert(key.to_string(), None);
                 }
             };
         }

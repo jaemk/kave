@@ -30,7 +30,7 @@ lazy_static = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "ansi", "fmt", "std", "json"] }
 # https://docs.rs/uuid/latest/uuid/
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 # date / time
 # https://docs.rs/chrono/latest/chrono/
 chrono = "0.4"
@@ -62,3 +62,7 @@ rb_tree = "0.5.0"
 # bloom filter implementation
 # https://docs.rs/bloom-filter-rs/0.1.0/bloom_filter_rs/
 bloom-filter-rs = "0.1.0"
+# An efficient ser/de format
+# https://docs.rs/rmp/latest/rmp/
+rmp = "0.8.11"
+rmp-serde = "1.1.0"

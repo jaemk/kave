@@ -4,35 +4,31 @@ use self::TransactInstruction::{Delete, Set};
 use crate::Result;
 use async_trait::async_trait;
 use cached::{stores::SizedCache, Cached};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-pub enum TransactInstruction<'a, K>
-where
-    K: AsRef<str> + Send,
+#[derive(Deserialize, Serialize)]
+pub enum TransactInstruction<'a>
 {
-    Set(K, &'a [u8]),
-    Delete(K),
+    Set(&'a str, &'a [u8]),
+    Delete(&'a str),
 }
 
-pub struct Transaction<'a, K>
-where
-    K: AsRef<str> + Send,
+pub struct Transaction<'a>
 {
     id: Uuid,
-    instructions: Vec<TransactInstruction<'a, K>>,
+    instructions: Vec<TransactInstruction<'a>>,
 }
 
-impl<'a, K> Transaction<'a, K>
-where
-    K: AsRef<str> + Send,
+impl<'a> Transaction<'a>
 {
-    pub fn new(id: Uuid, instructions: Vec<TransactInstruction<'a, K>>) -> Self {
+    pub fn new(id: Uuid, instructions: Vec<TransactInstruction<'a>>) -> Self {
         Self { id, instructions }
     }
 
-    pub fn with_random_id(instructions: Vec<TransactInstruction<'a, K>>) -> Self {
+    pub fn with_random_id(instructions: Vec<TransactInstruction<'a>>) -> Self {
         Self {
             id: Uuid::new_v4(),
             instructions,
@@ -42,11 +38,11 @@ where
 
 #[async_trait]
 pub trait Store {
-    async fn get<K: AsRef<str> + Send>(&mut self, k: K) -> Result<Option<Vec<u8>>>;
+    async fn get(&mut self, k: &str) -> Result<Option<Vec<u8>>>;
     /// Returns a vec with the previous values of the keys, if any
-    async fn transact<'a, K: AsRef<str> + Send>(
+    async fn transact<'a>(
         &mut self,
-        transaction: Transaction<'a, K>,
+        transaction: Transaction<'a>,
     ) -> Result<()>;
 }
 
@@ -65,19 +61,19 @@ impl MemoryStore {
 
 #[async_trait]
 impl Store for MemoryStore {
-    async fn get<K: AsRef<str> + Send>(&mut self, k: K) -> Result<Option<Vec<u8>>> {
+    async fn get(&mut self, k: &str) -> Result<Option<Vec<u8>>> {
         let mut data = self.data.lock().await;
-        Ok(data.cache_get(&k.as_ref().to_string()).cloned())
+        Ok(data.cache_get(&k.to_string()).cloned())
     }
-    async fn transact<'a, K: AsRef<str> + Send>(
+    async fn transact<'a>(
         &mut self,
-        transaction: Transaction<'a, K>,
+        transaction: Transaction<'a>,
     ) -> Result<()> {
         let mut data = self.data.lock().await;
         for instruction in transaction.instructions {
             match instruction {
-                Set(key, value) => data.cache_set(key.as_ref().to_string(), value.to_vec()),
-                Delete(key) => data.cache_remove(&key.as_ref().to_string()),
+                Set(key, value) => data.cache_set(key.to_string(), value.to_vec()),
+                Delete(key) => data.cache_remove(&key.to_string()),
             };
         }
         Ok(())
