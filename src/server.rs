@@ -1,7 +1,6 @@
 use crate::error::Result;
 use crate::get_config;
-use crate::store::TransactInstruction::Set;
-use crate::store::{Store, Transaction};
+use crate::store::{Store, TransactInstruction, Transaction};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
@@ -222,7 +221,10 @@ impl<S: Store + Send + Sync + Clone + 'static> Connection<S> {
                 tracing::info!("SET {key:?}");
                 tracing::trace!("SET {key:?} {val:?}");
                 self.store
-                    .transact(Transaction::with_random_id(vec![Set(key, &val)]))
+                    .transact(Transaction::with_random_id(vec![TransactInstruction::set(
+                        key,
+                        val.as_slice(),
+                    )]))
                     .await
                     .ok();
                 let len_v = val.len().to_string();

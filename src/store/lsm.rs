@@ -1,5 +1,6 @@
 mod commit_log;
 
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -7,13 +8,15 @@ use bloom_filter_rs::{BloomFilter, Murmur3};
 use rb_tree::RBMap;
 use tokio::sync::Mutex;
 
+use self::commit_log::CommitLog;
+
 use super::TransactInstruction::{Delete, Set};
 use super::{Store, Transaction};
 use crate::Result;
 
 /// A store backed by a [log-structured merge tree](http://www.benstopford.com/2015/02/14/log-structured-merge-trees)
-#[derive(Clone)]
-pub struct LSMStore {
+pub struct LSMStore<'a> {
+    commit_log: CommitLog<'a>,
     data: Arc<Mutex<LSMStoreData>>,
 }
 
@@ -22,9 +25,10 @@ struct LSMStoreData {
     bloom_filter: BloomFilter<Murmur3>,
 }
 
-impl LSMStore {
-    pub fn new() -> Self {
+impl<'a> LSMStore<'a> {
+    pub fn new(commit_log_path: &'a Path) -> Self {
         Self {
+            commit_log: CommitLog::new(commit_log_path),
             data: Arc::new(Mutex::new(LSMStoreData {
                 memtable: RBMap::new(),
                 // TODO what is the optimal number of items for the bloom filter?
@@ -38,7 +42,7 @@ impl LSMStore {
 }
 
 #[async_trait]
-impl Store for LSMStore {
+impl<'a> Store for LSMStore<'a> {
     async fn get(&mut self, k: &str) -> Result<Option<Vec<u8>>> {
         let store = self.data.lock().await;
         if !store.bloom_filter.contains(k.as_bytes()) {
@@ -49,18 +53,13 @@ impl Store for LSMStore {
         Ok(mem_result.unwrap().as_deref().map(|v| v.to_vec()))
     }
 
-    async fn transact<'a>(
-        &mut self,
-        transaction: Transaction<'a>,
-    ) -> Result<()> {
+    async fn transact(&mut self, transaction: Transaction) -> Result<()> {
+        self.commit_log.begin_transaction(&transaction).await?;
         let mut store = self.data.lock().await;
-        // TODO write begin_transaction to WAL
         for instruction in transaction.instructions {
             match instruction {
                 Set(key, value) => {
-                    store
-                        .memtable
-                        .insert(key.to_string(), Some(value.to_vec()));
+                    store.memtable.insert(key.to_string(), Some(value.to_vec()));
                     store.bloom_filter.insert(key.as_bytes());
                 }
                 Delete(key) => {

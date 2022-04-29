@@ -9,28 +9,34 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-#[derive(Deserialize, Serialize)]
-pub enum TransactInstruction<'a>
-{
-    Set(&'a str, &'a [u8]),
-    Delete(&'a str),
+#[derive(Deserialize, Serialize, Debug, Eq, PartialEq, Clone)]
+pub enum TransactInstruction {
+    Set(String, Vec<u8>),
+    Delete(String),
 }
 
-#[derive(Deserialize, Serialize)]
-pub struct Transaction<'a>
-{
+impl TransactInstruction {
+    pub fn set<K: Into<String>>(key: K, value: &[u8]) -> Self {
+        Set(key.into(), value.to_vec())
+    }
+
+    pub fn delete<K: Into<String>>(key: K) -> Self {
+        Delete(key.into())
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Eq, PartialEq, Clone)]
+pub struct Transaction {
     id: Uuid,
-    #[serde(borrow)]
-    instructions: Vec<TransactInstruction<'a>>,
+    instructions: Vec<TransactInstruction>,
 }
 
-impl<'a> Transaction<'a>
-{
-    pub fn new(id: Uuid, instructions: Vec<TransactInstruction<'a>>) -> Self {
+impl Transaction {
+    pub fn new(id: Uuid, instructions: Vec<TransactInstruction>) -> Self {
         Self { id, instructions }
     }
 
-    pub fn with_random_id(instructions: Vec<TransactInstruction<'a>>) -> Self {
+    pub fn with_random_id(instructions: Vec<TransactInstruction>) -> Self {
         Self {
             id: Uuid::new_v4(),
             instructions,
@@ -42,10 +48,7 @@ impl<'a> Transaction<'a>
 pub trait Store {
     async fn get(&mut self, k: &str) -> Result<Option<Vec<u8>>>;
     /// Returns a vec with the previous values of the keys, if any
-    async fn transact<'a>(
-        &mut self,
-        transaction: Transaction<'a>,
-    ) -> Result<()>;
+    async fn transact(&mut self, transaction: Transaction) -> Result<()>;
 }
 
 /// A basic in memory store for testing
@@ -67,10 +70,7 @@ impl Store for MemoryStore {
         let mut data = self.data.lock().await;
         Ok(data.cache_get(&k.to_string()).cloned())
     }
-    async fn transact<'a>(
-        &mut self,
-        transaction: Transaction<'a>,
-    ) -> Result<()> {
+    async fn transact(&mut self, transaction: Transaction) -> Result<()> {
         let mut data = self.data.lock().await;
         for instruction in transaction.instructions {
             match instruction {

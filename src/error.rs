@@ -9,11 +9,14 @@ pub enum Error {
     #[error("parseint error: {0}")]
     ParseIntError(#[from] std::num::ParseIntError),
 
-    #[error("messagepack decode error: {0}")]
-    MsgPackDecode(#[from] rmp_serde::decode::Error),
-
     #[error("uuid error: {0}")]
     UuidError(#[from] uuid::Error),
+
+    #[error("bincode error: {0}")]
+    BincodeError(#[from] bincode::Error),
+
+    #[error("system time error: {0}")]
+    SystemTimeError(#[from] std::time::SystemTimeError),
 }
 impl From<&str> for Error {
     fn from(s: &str) -> Error {
