@@ -50,7 +50,7 @@ impl<'a> CommitLog<'a> {
 
     /// Writes a begin_transaction line to the commit log.
     pub async fn begin_transaction<'b>(&mut self, tx: Transaction<'b>) -> Result<()> {
-        let mut bytes = b"begin_transaction:".to_vec();
+        let mut bytes = b"begin_tx:".to_vec();
         bytes.append(&mut tx.id.as_bytes().to_vec());
         bytes.append(&mut Self::encode_tx(&tx.instructions));
         let mut logfile = self.get_log_file().await?;
@@ -62,7 +62,16 @@ impl<'a> CommitLog<'a> {
     }
 
     /// Writes an end_transaction line to the commit log.
-    pub async fn end_transaction(&self, tx_id: Uuid) -> Result<()> {}
+    pub async fn end_transaction(&mut self, tx_id: Uuid) -> Result<()> {
+        let mut bytes = b"end_tx:".to_vec();
+        bytes.append(&mut tx_id.as_bytes().to_vec());
+        let mut logfile = self.get_log_file().await?;
+        logfile.write_all(&bytes).await?;
+        // TODO this is expensive. Should we relax the durability guarantee a bit,
+        // say by syncing the logfile every n seconds or something?
+        logfile.sync_all().await?;
+        Ok(())
+    }
 
     /// Returns any unfinished transactions found in the commit log.
     /// Should only be called on startup before the node starts receiving traffic.
