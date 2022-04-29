@@ -92,6 +92,8 @@ impl<'a> CommitLog<'a> {
         let logfile = self.get_log_file().await?;
         let mut i = 0;
         let mut reader = BufReader::new(logfile);
+        // TODO this is swallowing errors, we need proper error handling that ignores
+        // UnexpectedEof but handles everything else
         while let Ok(line) = CommitLogLine::decode_from(&mut reader).await {
             match line {
                 BeginTx(tx) => {
@@ -114,10 +116,7 @@ impl<'a> CommitLog<'a> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        store::{
-            TransactInstruction::{self, Set},
-            Transaction,
-        },
+        store::{TransactInstruction, Transaction},
         Error, Result,
     };
     use std::{
