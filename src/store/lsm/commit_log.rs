@@ -1,13 +1,14 @@
 //! The commit log is a file-backed append-only log of transactions performed by the KV store.
 //! It's used to recover unfinished transactions in the event of an unplanned shutdown.
 
-use std::path::Path;
+use std::{path::Path, collections::HashMap};
 
+use itertools::Itertools;
 use rmp_serde::{Deserializer, Serializer};
 use serde::{Deserialize, Serialize};
 use tokio::{
     fs::{File, OpenOptions},
-    io::AsyncWriteExt,
+    io::{AsyncWriteExt, BufReader, AsyncBufReadExt},
 };
 use uuid::Uuid;
 
@@ -71,8 +72,27 @@ impl<'a> CommitLog<'a> {
 
     /// Returns any unfinished transactions found in the commit log.
     /// Should only be called on startup before the node starts receiving traffic.
-    pub async fn get_unfinished_transaction<'b, K: AsRef<str> + Send>(
-        &self,
-    ) -> Vec<Transaction<'b>> {
+    pub async fn get_unfinished_transaction<'b: 'a, K: AsRef<str> + Send>(
+        &mut self,
+    ) -> Result<Vec<&Transaction<'b>>> {
+        let mut txs = HashMap::new();
+        let logfile = self.get_log_file().await?;
+        let mut lines = BufReader::new(logfile).lines();
+        let mut i = 0;
+        while let Some(line) = lines.next_line().await? {
+            match line.split_once(':') {
+                Some(("begin_tx", tx_ser)) => {
+                    let tx = Self::decode_tx(tx_ser.as_bytes())?;
+                    txs.insert(tx.id, (i, tx));
+                },
+                Some(("end_tx", tx_id_ser))  => {
+                    let tx_id = Uuid::from_slice(tx_id_ser.as_bytes())?;
+                    txs.remove(&tx_id);
+                },
+            }
+            i += 1;
+        }
+        let res = txs.values().sorted_by_key(|v| v.0).map(|v| &v.1).collect_vec();
+        Ok(res)
     }
 }

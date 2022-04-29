@@ -10,7 +10,10 @@ pub enum Error {
     ParseIntError(#[from] std::num::ParseIntError),
 
     #[error("messagepack decode error: {0}")]
-    MsgPackDecode(#[from] rmp_serde::decode::Error)
+    MsgPackDecode(#[from] rmp_serde::decode::Error),
+
+    #[error("uuid error: {0}")]
+    UuidError(#[from] uuid::Error),
 }
 impl From<&str> for Error {
     fn from(s: &str) -> Error {
