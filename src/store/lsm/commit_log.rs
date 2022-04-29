@@ -158,4 +158,14 @@ mod tests {
         assert_eq!(vec![tx2.clone()], unfinished_txs);
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_empty_log() -> Result<()> {
+        let path = self::get_tmp_log_path()?;
+        let mut commit_log = CommitLog::new(path.as_path());
+        let unfinished_txs = commit_log.get_unfinished_transactions().await?;
+        let empty: Vec<Transaction> = vec![];
+        assert_eq!(empty, unfinished_txs);
+        Ok(())
+    }
 }
