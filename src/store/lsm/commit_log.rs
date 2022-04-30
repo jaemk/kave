@@ -129,7 +129,6 @@ mod tests {
 
     fn get_tmp_log_path() -> Result<PathBuf> {
         let path = env::temp_dir();
-        println!("path: {:?}", path);
         match SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| path.join(format!("commit_log_{}", d.as_millis())))
