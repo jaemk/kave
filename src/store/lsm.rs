@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 
 use self::commit_log::CommitLog;
 
-use super::TransactInstruction::{Delete, Set};
+use super::Operation::{Delete, Set};
 use super::{Store, Transaction};
 use crate::Result;
 
@@ -57,7 +57,7 @@ impl Store for LSMStore {
     async fn transact(&mut self, transaction: Transaction) -> Result<()> {
         self.commit_log.begin_transaction(&transaction).await?;
         let mut store = self.data.lock().await;
-        for instruction in transaction.instructions {
+        for instruction in transaction.operations {
             match instruction {
                 Set(key, value) => {
                     store.memtable.insert(key.to_string(), Some(value.to_vec()));

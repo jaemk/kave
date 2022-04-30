@@ -152,7 +152,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::{
-        store::{TransactInstruction, Transaction},
+        store::{Operation, Transaction},
         Result,
     };
     use std::env;
@@ -167,9 +167,9 @@ mod tests {
     #[tokio::test]
     async fn test_end_to_end() -> Result<()> {
         let mut commit_log = self::get_commit_log().await?;
-        let tx1 = Transaction::with_random_id(vec![TransactInstruction::set("foo", b"bar")]);
-        let tx2 = Transaction::with_random_id(vec![TransactInstruction::set("foo", b"bar")]);
-        let tx3 = Transaction::with_random_id(vec![TransactInstruction::set("foo", b"bar")]);
+        let tx1 = Transaction::with_random_id(vec![Operation::set("foo", b"bar")]);
+        let tx2 = Transaction::with_random_id(vec![Operation::set("foo", b"bar")]);
+        let tx3 = Transaction::with_random_id(vec![Operation::set("foo", b"bar")]);
         commit_log.begin_transaction(&tx1).await?;
         commit_log.begin_transaction(&tx2).await?;
         commit_log.begin_transaction(&tx3).await?;

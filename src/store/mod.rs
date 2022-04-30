@@ -1,6 +1,6 @@
 pub mod lsm;
 
-use self::TransactInstruction::{Delete, Set};
+use self::Operation::{Delete, Set};
 use crate::Result;
 use async_trait::async_trait;
 use cached::{stores::SizedCache, Cached};
@@ -10,12 +10,12 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 #[derive(Deserialize, Serialize, Debug, Eq, PartialEq, Clone)]
-pub enum TransactInstruction {
+pub enum Operation {
     Set(String, Vec<u8>),
     Delete(String),
 }
 
-impl TransactInstruction {
+impl Operation {
     pub fn set<K: Into<String>>(key: K, value: &[u8]) -> Self {
         Set(key.into(), value.to_vec())
     }
@@ -28,18 +28,18 @@ impl TransactInstruction {
 #[derive(Deserialize, Serialize, Debug, Eq, PartialEq, Clone)]
 pub struct Transaction {
     id: Uuid,
-    instructions: Vec<TransactInstruction>,
+    operations: Vec<Operation>,
 }
 
 impl Transaction {
-    pub fn new(id: Uuid, instructions: Vec<TransactInstruction>) -> Self {
-        Self { id, instructions }
+    pub fn new(id: Uuid, operations: Vec<Operation>) -> Self {
+        Self { id, operations }
     }
 
-    pub fn with_random_id(instructions: Vec<TransactInstruction>) -> Self {
+    pub fn with_random_id(operations: Vec<Operation>) -> Self {
         Self {
             id: Uuid::new_v4(),
-            instructions,
+            operations,
         }
     }
 }
@@ -72,7 +72,7 @@ impl Store for MemoryStore {
     }
     async fn transact(&mut self, transaction: Transaction) -> Result<()> {
         let mut data = self.data.lock().await;
-        for instruction in transaction.instructions {
+        for instruction in transaction.operations {
             match instruction {
                 Set(key, value) => data.cache_set(key.to_string(), value.to_vec()),
                 Delete(key) => data.cache_remove(&key.to_string()),
