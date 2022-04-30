@@ -1,53 +1,54 @@
 pub mod lsm;
 
-use self::TransactInstruction::{Delete, Set};
+use self::Operation::{Delete, Set};
 use crate::Result;
 use async_trait::async_trait;
 use cached::{stores::SizedCache, Cached};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-pub enum TransactInstruction<'a, K>
-where
-    K: AsRef<str> + Send,
-{
-    Set(K, &'a [u8]),
-    Delete(K),
+#[derive(Deserialize, Serialize, Debug, Eq, PartialEq, Clone)]
+pub enum Operation {
+    Set(String, Vec<u8>),
+    Delete(String),
 }
 
-pub struct Transaction<'a, K>
-where
-    K: AsRef<str> + Send,
-{
-    id: Uuid,
-    instructions: Vec<TransactInstruction<'a, K>>,
-}
-
-impl<'a, K> Transaction<'a, K>
-where
-    K: AsRef<str> + Send,
-{
-    pub fn new(id: Uuid, instructions: Vec<TransactInstruction<'a, K>>) -> Self {
-        Self { id, instructions }
+impl Operation {
+    pub fn set<K: Into<String>>(key: K, value: &[u8]) -> Self {
+        Set(key.into(), value.to_vec())
     }
 
-    pub fn with_random_id(instructions: Vec<TransactInstruction<'a, K>>) -> Self {
+    pub fn delete<K: Into<String>>(key: K) -> Self {
+        Delete(key.into())
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Eq, PartialEq, Clone)]
+pub struct Transaction {
+    id: Uuid,
+    operations: Vec<Operation>,
+}
+
+impl Transaction {
+    pub fn new(id: Uuid, operations: Vec<Operation>) -> Self {
+        Self { id, operations }
+    }
+
+    pub fn with_random_id(operations: Vec<Operation>) -> Self {
         Self {
             id: Uuid::new_v4(),
-            instructions,
+            operations,
         }
     }
 }
 
 #[async_trait]
 pub trait Store {
-    async fn get<K: AsRef<str> + Send>(&mut self, k: K) -> Result<Option<Vec<u8>>>;
+    async fn get(&mut self, k: &str) -> Result<Option<Vec<u8>>>;
     /// Returns a vec with the previous values of the keys, if any
-    async fn transact<'a, K: AsRef<str> + Send>(
-        &mut self,
-        transaction: Transaction<'a, K>,
-    ) -> Result<()>;
+    async fn transact(&mut self, transaction: Transaction) -> Result<()>;
 }
 
 /// A basic in memory store for testing
@@ -65,19 +66,16 @@ impl MemoryStore {
 
 #[async_trait]
 impl Store for MemoryStore {
-    async fn get<K: AsRef<str> + Send>(&mut self, k: K) -> Result<Option<Vec<u8>>> {
+    async fn get(&mut self, k: &str) -> Result<Option<Vec<u8>>> {
         let mut data = self.data.lock().await;
-        Ok(data.cache_get(&k.as_ref().to_string()).cloned())
+        Ok(data.cache_get(&k.to_string()).cloned())
     }
-    async fn transact<'a, K: AsRef<str> + Send>(
-        &mut self,
-        transaction: Transaction<'a, K>,
-    ) -> Result<()> {
+    async fn transact(&mut self, transaction: Transaction) -> Result<()> {
         let mut data = self.data.lock().await;
-        for instruction in transaction.instructions {
+        for instruction in transaction.operations {
             match instruction {
-                Set(key, value) => data.cache_set(key.as_ref().to_string(), value.to_vec()),
-                Delete(key) => data.cache_remove(&key.as_ref().to_string()),
+                Set(key, value) => data.cache_set(key.to_string(), value.to_vec()),
+                Delete(key) => data.cache_remove(&key.to_string()),
             };
         }
         Ok(())

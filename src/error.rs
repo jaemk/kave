@@ -8,6 +8,9 @@ pub enum Error {
 
     #[error("parseint error: {0}")]
     ParseIntError(#[from] std::num::ParseIntError),
+
+    #[error("bincode error: {0}")]
+    BincodeError(#[from] bincode::Error),
 }
 impl From<&str> for Error {
     fn from(s: &str) -> Error {
