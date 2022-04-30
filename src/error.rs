@@ -9,9 +9,6 @@ pub enum Error {
     #[error("parseint error: {0}")]
     ParseIntError(#[from] std::num::ParseIntError),
 
-    #[error("uuid error: {0}")]
-    UuidError(#[from] uuid::Error),
-
     #[error("bincode error: {0}")]
     BincodeError(#[from] bincode::Error),
 }
