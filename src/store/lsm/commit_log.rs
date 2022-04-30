@@ -1,7 +1,7 @@
 //! The commit log is a file-backed append-only log of transactions performed by the KV store.
 //! It's used to recover unfinished transactions in the event of an unplanned shutdown.
 
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, io::ErrorKind, path::Path};
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -14,7 +14,7 @@ use uuid::Uuid;
 use self::CommitLogLine::{BeginTx, EndTx};
 use crate::{store::Transaction, Error, Result};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 enum CommitLogLine {
     BeginTx(Transaction),
     EndTx(Uuid),
@@ -28,13 +28,24 @@ impl CommitLogLine {
         Ok(buf)
     }
 
-    async fn decode_from<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Self> {
-        let size = reader.read_u64().await?;
-        let mut buf = Vec::new();
-        reader.take(size).read_buf(&mut buf).await?;
-        match bincode::deserialize(buf.as_slice()) {
-            Ok(c) => Ok(c),
-            Err(e) => Err(Error::BincodeError(e)),
+    async fn decode_from<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<Self>> {
+        let size = match reader.read_u64().await {
+            Ok(s) => Ok(Some(s)),
+            Err(e) => match e.kind() {
+                ErrorKind::UnexpectedEof => Ok(None),
+                _ => Err(Error::IO(e)),
+            },
+        }?;
+        match size {
+            Some(s) => {
+                let mut buf = Vec::new();
+                reader.take(s).read_buf(&mut buf).await?;
+                match bincode::deserialize(buf.as_slice()) {
+                    Ok(c) => Ok(Some(c)),
+                    Err(e) => Err(Error::BincodeError(e)),
+                }
+            }
+            None => Ok(None),
         }
     }
 }
@@ -92,17 +103,23 @@ impl<'a> CommitLog<'a> {
         let logfile = self.get_log_file().await?;
         let mut i = 0;
         let mut reader = BufReader::new(logfile);
-        // TODO this is swallowing errors, we need proper error handling that ignores
-        // UnexpectedEof but handles everything else
-        while let Ok(line) = CommitLogLine::decode_from(&mut reader).await {
-            match line {
-                BeginTx(tx) => {
-                    txs.insert(tx.id, (i, tx));
-                }
-                EndTx(tx_id) => {
-                    txs.remove(&tx_id);
-                }
-            };
+        loop {
+            match CommitLogLine::decode_from(&mut reader).await {
+                Ok(maybe_line) => match maybe_line {
+                    Some(line) => match line {
+                        BeginTx(tx) => {
+                            txs.insert(tx.id, (i, tx));
+                        }
+                        EndTx(tx_id) => {
+                            txs.remove(&tx_id);
+                        }
+                    },
+                    None => {
+                        break;
+                    }
+                },
+                Err(e) => return Err(Error::from(e)),
+            }
             i += 1;
         }
         Ok(txs
