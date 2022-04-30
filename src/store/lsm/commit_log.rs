@@ -140,29 +140,19 @@ impl CommitLog {
 
 #[cfg(test)]
 mod tests {
+    use uuid::Uuid;
+
     use crate::{
         store::{TransactInstruction, Transaction},
-        Error, Result,
+        Result,
     };
-    use std::{
-        env,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::env;
 
     use super::CommitLog;
 
     async fn get_commit_log() -> Result<CommitLog> {
-        let path = match SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| env::temp_dir().join(format!("commit_log_{}", d.as_millis())))
-        {
-            Ok(p) => Ok(p),
-            Err(e) => Err(Error::SystemTimeError(e)),
-        };
-        match path {
-            Ok(p) => CommitLog::new(p.as_path()).await,
-            Err(e) => Err(e),
-        }
+        let path = env::temp_dir().join(format!("commit_log_{}", Uuid::new_v4()));
+        CommitLog::new(path.as_path()).await
     }
 
     #[tokio::test]

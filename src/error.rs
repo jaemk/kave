@@ -14,9 +14,6 @@ pub enum Error {
 
     #[error("bincode error: {0}")]
     BincodeError(#[from] bincode::Error),
-
-    #[error("system time error: {0}")]
-    SystemTimeError(#[from] std::time::SystemTimeError),
 }
 impl From<&str> for Error {
     fn from(s: &str) -> Error {
