@@ -1,7 +1,11 @@
 //! The commit log is a file-backed append-only log of transactions performed by the KV store.
 //! It's used to recover unfinished transactions in the event of an unplanned shutdown.
 
-use std::{collections::HashMap, io::ErrorKind, path::Path};
+use std::{
+    collections::HashMap,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+};
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -50,33 +54,30 @@ impl CommitLogLine {
     }
 }
 
-pub struct CommitLog<'a> {
-    log_path: &'a Path,
+pub struct CommitLog {
+    log_path: PathBuf,
+    logfile: File,
 }
 
-impl<'a> CommitLog<'a> {
-    pub fn new(log_path: &'a Path) -> Self {
-        Self { log_path }
-    }
-
-    async fn get_log_file(&mut self) -> Result<File> {
-        match OpenOptions::new()
+impl CommitLog {
+    pub async fn new(log_path: &Path) -> Result<Self> {
+        let logfile = OpenOptions::new()
             .read(true)
             .append(true)
             .create(true)
-            .open(self.log_path)
-            .await
-        {
-            Ok(f) => Ok(f),
-            Err(e) => Err(Error::from(e)),
-        }
+            .open(log_path)
+            .await?;
+        Ok(Self {
+            logfile,
+            log_path: log_path.to_path_buf(),
+        })
     }
 
     /// Writes a begin_transaction line to the commit log.
     pub async fn begin_transaction(&mut self, tx: &Transaction) -> Result<()> {
         let line = BeginTx(tx.clone());
         let bytes = line.encode()?;
-        let mut logfile = self.get_log_file().await?;
+        let logfile = &mut self.logfile;
         logfile.write_all(bytes.as_slice()).await?;
         // TODO this is expensive. Should we relax the durability guarantee a bit,
         // say by syncing the logfile every n seconds or something?
@@ -88,7 +89,7 @@ impl<'a> CommitLog<'a> {
     pub async fn end_transaction(&mut self, tx_id: &Uuid) -> Result<()> {
         let line = EndTx(tx_id.clone());
         let bytes = line.encode()?;
-        let mut logfile = self.get_log_file().await?;
+        let logfile = &mut self.logfile;
         logfile.write_all(bytes.as_slice()).await?;
         // TODO this is expensive. Should we relax the durability guarantee a bit,
         // say by syncing the logfile every n seconds or something?
@@ -100,7 +101,14 @@ impl<'a> CommitLog<'a> {
     /// Should only be called on startup before the node starts receiving traffic.
     pub async fn get_unfinished_transactions(&mut self) -> Result<Vec<Transaction>> {
         let mut txs = HashMap::new();
-        let logfile = self.get_log_file().await?;
+        // Get an owned version of the file
+        // This is safe since this method is only called before any writes are done
+        let logfile = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(self.log_path.as_path())
+            .await?;
         let mut i = 0;
         let mut reader = BufReader::new(logfile);
         loop {
@@ -138,27 +146,28 @@ mod tests {
     };
     use std::{
         env,
-        path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
     };
 
     use super::CommitLog;
 
-    fn get_tmp_log_path() -> Result<PathBuf> {
-        let path = env::temp_dir();
-        match SystemTime::now()
+    async fn get_commit_log() -> Result<CommitLog> {
+        let path = match SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| path.join(format!("commit_log_{}", d.as_millis())))
+            .map(|d| env::temp_dir().join(format!("commit_log_{}", d.as_millis())))
         {
             Ok(p) => Ok(p),
             Err(e) => Err(Error::SystemTimeError(e)),
+        };
+        match path {
+            Ok(p) => CommitLog::new(p.as_path()).await,
+            Err(e) => Err(e),
         }
     }
 
     #[tokio::test]
     async fn test_end_to_end() -> Result<()> {
-        let path = self::get_tmp_log_path()?;
-        let mut commit_log = CommitLog::new(path.as_path());
+        let mut commit_log = self::get_commit_log().await?;
         let tx1 = Transaction::with_random_id(vec![TransactInstruction::set("foo", b"bar")]);
         let tx2 = Transaction::with_random_id(vec![TransactInstruction::set("foo", b"bar")]);
         let tx3 = Transaction::with_random_id(vec![TransactInstruction::set("foo", b"bar")]);
@@ -176,8 +185,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_log() -> Result<()> {
-        let path = self::get_tmp_log_path()?;
-        let mut commit_log = CommitLog::new(path.as_path());
+        let mut commit_log = self::get_commit_log().await?;
         let unfinished_txs = commit_log.get_unfinished_transactions().await?;
         let empty: Vec<Transaction> = vec![];
         assert_eq!(empty, unfinished_txs);
