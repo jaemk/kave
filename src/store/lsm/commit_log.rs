@@ -73,10 +73,12 @@ impl CommitLog {
         })
     }
 
+    /// Returns the shared open file handle
     fn get_write_handle(&mut self) -> &mut File {
         &mut self.logfile
     }
 
+    /// Returns a new owned file handle
     async fn get_read_handle(&self) -> Result<File> {
         let file = OpenOptions::new()
             .read(true)
@@ -115,8 +117,6 @@ impl CommitLog {
     /// Should only be called on startup before the node starts receiving traffic.
     pub async fn get_unfinished_transactions(&mut self) -> Result<Vec<Transaction>> {
         let mut txs = HashMap::new();
-        // Get an owned version of the file
-        // This is safe since this method is only called before any writes are done
         let logfile = self.get_read_handle().await?;
         let mut i = 0;
         let mut reader = BufReader::new(logfile);
