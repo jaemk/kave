@@ -60,7 +60,7 @@ pub struct CommitLog {
 }
 
 impl CommitLog {
-    pub async fn new(log_path: &Path) -> Result<Self> {
+    pub async fn initialize(log_path: &Path) -> Result<Self> {
         let logfile = OpenOptions::new()
             .read(true)
             .append(true)
@@ -73,11 +73,25 @@ impl CommitLog {
         })
     }
 
+    fn get_write_handle(&mut self) -> &mut File {
+        &mut self.logfile
+    }
+
+    async fn get_read_handle(&self) -> Result<File> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&self.log_path)
+            .await?;
+        Ok(file)
+    }
+
     /// Writes a begin_transaction line to the commit log.
     pub async fn begin_transaction(&mut self, tx: &Transaction) -> Result<()> {
         let line = BeginTx(tx.clone());
         let bytes = line.encode()?;
-        let logfile = &mut self.logfile;
+        let logfile = self.get_write_handle();
         logfile.write_all(bytes.as_slice()).await?;
         // TODO this is expensive. Should we relax the durability guarantee a bit,
         // say by syncing the logfile every n seconds or something?
@@ -89,7 +103,7 @@ impl CommitLog {
     pub async fn end_transaction(&mut self, tx_id: &Uuid) -> Result<()> {
         let line = EndTx(tx_id.clone());
         let bytes = line.encode()?;
-        let logfile = &mut self.logfile;
+        let logfile = self.get_write_handle();
         logfile.write_all(bytes.as_slice()).await?;
         // TODO this is expensive. Should we relax the durability guarantee a bit,
         // say by syncing the logfile every n seconds or something?
@@ -103,12 +117,7 @@ impl CommitLog {
         let mut txs = HashMap::new();
         // Get an owned version of the file
         // This is safe since this method is only called before any writes are done
-        let logfile = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .open(self.log_path.as_path())
-            .await?;
+        let logfile = self.get_read_handle().await?;
         let mut i = 0;
         let mut reader = BufReader::new(logfile);
         loop {
@@ -152,7 +161,7 @@ mod tests {
 
     async fn get_commit_log() -> Result<CommitLog> {
         let path = env::temp_dir().join(format!("commit_log_{}", Uuid::new_v4()));
-        CommitLog::new(path.as_path()).await
+        CommitLog::initialize(path.as_path()).await
     }
 
     #[tokio::test]

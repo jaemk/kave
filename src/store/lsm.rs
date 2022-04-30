@@ -26,8 +26,8 @@ struct LSMStoreData {
 }
 
 impl LSMStore {
-    pub async fn new(commit_log_path: &Path) -> Result<Self> {
-        let commit_log = CommitLog::new(commit_log_path).await?;
+    pub async fn initialize(commit_log_path: &Path) -> Result<Self> {
+        let commit_log = CommitLog::initialize(commit_log_path).await?;
         Ok(Self {
             commit_log,
             data: Arc::new(Mutex::new(LSMStoreData {
