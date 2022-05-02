@@ -18,8 +18,8 @@ use self::Value::{Data, Tombstone};
 
 use super::Operation::{Delete, Set};
 use super::{Store, Transaction};
-use crate::{utils, Config};
 use crate::Result;
+use crate::{utils, Config};
 
 /// A store backed by a [log-structured merge tree](http://www.benstopford.com/2015/02/14/log-structured-merge-trees)
 pub struct LSMStore {
@@ -50,35 +50,48 @@ impl Value {
 }
 
 impl LSMStore {
-    pub async fn initialize(config: Config, commit_log_path: &Path, data_dir: &Path) -> Result<Self> {
+    pub async fn initialize(
+        config: &Config,
+        commit_log_path: &Path,
+        data_dir: &Path,
+    ) -> Result<Self> {
         let commit_log = CommitLog::initialize(commit_log_path).await?;
-        let mut store = Self {
+        let store = Self {
             commit_log,
             data_dir: data_dir.to_path_buf(),
-            memtable_max_bytes: config.memtable_max_mb *  1_000_000,
+            memtable_max_bytes: config.memtable_max_mb * 1_000_000,
             data: Arc::new(RwLock::new(LSMStoreData {
                 memtable: RBMap::new(),
                 // TODO what is the optimal number of items for the bloom filter?
                 bloom_filter: BloomFilter::optimal(Murmur3, 512, 0.01),
             })),
         };
+        Ok(store)
+    }
+
+    pub fn start_background_tasks(&self) {
         tokio::spawn(async {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             loop {
                 interval.tick().await;
-                if store.should_flush_memtable().await.expect("Failed to size memtable") {
-                    store.write_sstable().await.expect("Failed to flush memtable");
+                if self
+                    .should_flush_memtable()
+                    .await
+                    .expect("Failed to size memtable")
+                {
+                    self.write_sstable()
+                        .await
+                        .expect("Failed to flush memtable");
                 };
-            };
+            }
         });
-        Ok(store)
     }
 
     /// Whether the memtable has grown big enough to flush to disk.
     async fn should_flush_memtable(&self) -> Result<bool> {
         let store = self.data.read().await;
         let size = bincode::serialized_size(&store.memtable)?;
-        return Ok(size >= self.memtable_max_bytes)
+        return Ok(size >= self.memtable_max_bytes);
     }
 
     /// Returns a vector of SSTable paths, ordered from newest to oldest.
