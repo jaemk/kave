@@ -47,6 +47,9 @@ pub struct Config {
 
     // key used for signing/hashing things
     pub signing_key: String,
+
+    // how big the memtable can get before being flushed to disk
+    pub memtable_max_mb: u64,
 }
 impl Config {
     pub fn load() -> Self {
@@ -70,6 +73,9 @@ impl Config {
                 .expect("invalid LOG_FORMAT"),
             encryption_key: env_or("ENCRYPTION_KEY", "01234567890123456789012345678901"),
             signing_key: env_or("SIGNING_KEY", "01234567890123456789012345678901"),
+            memtable_max_mb: env_or("MEMTABLE_MAX_MB", "256")
+                .parse()
+                .expect("Not a number"),
         }
     }
     pub fn get_cluster_addr(&self) -> String {

@@ -9,6 +9,8 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
 };
 
+use super::Value;
+
 // TODO this implementation loads the entire sstable into memory to
 // search for a value.  A better approach would be serialize the
 // sstable into an index block and a data block.  The data block is
@@ -42,7 +44,7 @@ impl SSTable {
     }
 
     /// Writes the memtable to disk as an SSTable
-    pub async fn write(&self, memtable: &RBMap<String, Option<Vec<u8>>>) -> Result<()> {
+    pub async fn write(&self, memtable: &RBMap<String, Value>) -> Result<()> {
         match fs::metadata(&self.filepath).await {
             Ok(_) => Err(Error::E(format!(
                 "File {} already exists",
@@ -57,11 +59,11 @@ impl SSTable {
     }
 
     /// Returns the value associated with the key if it exists in the SSTable.
-    pub async fn search(&self, key: String) -> Result<Option<Vec<u8>>> {
+    pub async fn search(&self, key: String) -> Result<Option<Value>> {
         let mut file = self.file_handle().await?;
         let mut buf = Vec::new();
         file.read_to_end(&mut buf).await?;
-        let memtable: RBMap<String, Option<Vec<u8>>> = bincode::deserialize(buf.as_slice())?;
-        Ok(memtable.get(&key).map(|v| v.to_owned()).unwrap_or(None))
+        let memtable: RBMap<String, Value> = bincode::deserialize(buf.as_slice())?;
+        Ok(memtable.get(&key).map(|v| v.to_owned()))
     }
 }
