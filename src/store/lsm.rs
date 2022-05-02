@@ -1,4 +1,5 @@
 mod commit_log;
+mod sstable;
 
 use std::path::Path;
 use std::sync::Arc;
