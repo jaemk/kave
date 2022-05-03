@@ -184,7 +184,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_log() -> Result<()> {
-        let mut commit_log = self::get_commit_log().await?;
+        let commit_log = self::get_commit_log().await?;
         let unfinished_txs = commit_log.get_unfinished_transactions().await?;
         let empty: Vec<Transaction> = vec![];
         assert_eq!(empty, unfinished_txs);
