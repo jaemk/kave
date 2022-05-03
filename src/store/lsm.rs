@@ -7,10 +7,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use bloom_filter_rs::{BloomFilter, Murmur3};
+use growable_bloom_filter::GrowableBloom;
 use rb_tree::RBMap;
 use serde::{Deserialize, Serialize};
-use tokio::fs;
+use tokio::fs::{self, OpenOptions};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -30,7 +31,6 @@ type Shared<T> = Arc<RwLock<T>>;
 pub struct LSMStore {
     data: Shared<LSMData>,
     commit_log: Shared<CommitLog>,
-    bloom_filter: Shared<BloomFilter<Murmur3>>,
     data_dir: PathBuf,
     memtable_max_bytes: usize,
 }
@@ -38,6 +38,7 @@ pub struct LSMStore {
 struct LSMData {
     memtable: RBMap<String, Value>,
     tx_ids: Vec<Uuid>,
+    bloom_filter: GrowableBloom,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -62,10 +63,10 @@ impl LSMStore {
             data: Arc::new(RwLock::new(LSMData {
                 memtable: RBMap::new(),
                 tx_ids: Vec::new(),
+                // TODO what is the optimal number of items for the bloom filter?
+                bloom_filter: GrowableBloom::new(0.01, 512),
             })),
             commit_log: Arc::new(RwLock::new(commit_log)),
-            // TODO what is the optimal number of items for the bloom filter?
-            bloom_filter: Arc::new(RwLock::new(BloomFilter::optimal(Murmur3, 512, 0.01))),
             data_dir: data_dir.to_path_buf(),
             memtable_max_bytes,
         }
@@ -86,9 +87,17 @@ impl LSMStore {
     }
 
     pub async fn initialize(&mut self) -> Result<()> {
-        // TODO once bloom filter is persisted to disk, restore it here
+        self.restore_bloom_filter().await?;
         self.restore_previous_txs().await?;
         self.start_background_tasks();
+        Ok(())
+    }
+
+    pub async fn shutdown(self) -> Result<()> {
+        let data = self.data.clone();
+        let commit_log = self.commit_log.clone();
+        Self::write_sstable(data.clone(), self.data_dir.as_path(), commit_log).await?;
+        Self::write_bloom_filter(data.clone(), self.data_dir.as_path()).await?;
         Ok(())
     }
 
@@ -121,11 +130,13 @@ impl LSMStore {
                     )
                     .await
                     .expect("Failed to flush memtable");
+                    Self::write_bloom_filter(data.clone(), data_dir.clone().as_path())
+                        .await
+                        .expect("Failed to write bloom filter");
                 };
             }
         });
         // TODO implement segment compaction
-        // TODO persist bloom filter to disk
     }
 
     /// Whether the memtable has grown big enough to flush to disk.
@@ -184,14 +195,43 @@ impl LSMStore {
         data.tx_ids = Vec::new();
         Ok(())
     }
+
+    /// Write the bloom filter to disk for later recovery
+    async fn write_bloom_filter(data: Shared<LSMData>, data_dir: &Path) -> Result<()> {
+        let path = data_dir.join("bloom_filter");
+        let data = data.read().await;
+        let buf = bincode::serialize(&data.bloom_filter)?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .await?;
+        file.write_all(buf.as_slice()).await?;
+        file.sync_all().await?;
+        Ok(())
+    }
+
+    /// Restore the bloom filter from disk. Overwrites the current bloom filter
+    async fn restore_bloom_filter(&mut self) -> Result<()> {
+        let path = self.data_dir.join("bloom_filter");
+        if !path.exists() {
+            return Ok(());
+        }
+        let mut file = OpenOptions::new().read(true).open(path).await?;
+        let mut buf = Vec::new();
+        file.read_buf(&mut buf).await?;
+        let bloom_filter = bincode::deserialize(buf.as_slice())?;
+        let mut data = self.data.write().await;
+        data.bloom_filter = bloom_filter;
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl Store for LSMStore {
     async fn get(&mut self, k: &str) -> Result<Option<Vec<u8>>> {
         let store = self.data.read().await;
-        let bloom_filter = self.bloom_filter.read().await;
-        if !bloom_filter.contains(k.as_bytes()) {
+        if !store.bloom_filter.contains(k.as_bytes()) {
             return Ok(None);
         }
         let mut result = store
@@ -210,13 +250,12 @@ impl Store for LSMStore {
         let tx_ids = &mut data.tx_ids;
         tx_ids.push(transaction.id.clone());
         commit_log.begin_transaction(&transaction).await?;
-        let mut bloom_filter = self.bloom_filter.write().await;
         for instruction in transaction.operations {
             match instruction {
                 Set(key, value) => {
                     data.memtable
                         .insert(key.to_string(), Value::Data(value.to_vec()));
-                    bloom_filter.insert(key.as_bytes());
+                    data.bloom_filter.insert(key.as_bytes());
                 }
                 Delete(key) => {
                     data.memtable.insert(key.to_string(), Value::Tombstone);
