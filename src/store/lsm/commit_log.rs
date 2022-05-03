@@ -115,7 +115,7 @@ impl CommitLog {
 
     /// Returns any unfinished transactions found in the commit log.
     /// Should only be called on startup before the node starts receiving traffic.
-    pub async fn get_unfinished_transactions(&mut self) -> Result<Vec<Transaction>> {
+    pub async fn get_unfinished_transactions(&self) -> Result<Vec<Transaction>> {
         let mut txs = HashMap::new();
         let logfile = self.get_read_handle().await?;
         let mut i = 0;
