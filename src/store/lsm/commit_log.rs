@@ -56,26 +56,29 @@ impl CommitLogLine {
 
 pub struct CommitLog {
     log_path: PathBuf,
-    logfile: File,
+    logfile: Option<File>,
 }
 
 impl CommitLog {
-    pub async fn initialize(log_path: &Path) -> Result<Self> {
-        let logfile = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .open(log_path)
-            .await?;
-        Ok(Self {
-            logfile,
+    pub fn new(log_path: &Path) -> Self {
+        Self {
             log_path: log_path.to_path_buf(),
-        })
+            logfile: None,
+        }
     }
 
     /// Returns the shared open file handle
-    fn get_write_handle(&mut self) -> &mut File {
-        &mut self.logfile
+    async fn get_write_handle(&mut self) -> Result<&mut File> {
+        if self.logfile.is_none() {
+            let file = OpenOptions::new()
+                .read(true)
+                .append(true)
+                .create(true)
+                .open(&self.log_path)
+                .await?;
+            self.logfile = Some(file);
+        }
+        Ok(self.logfile.as_mut().unwrap())
     }
 
     /// Returns a new owned file handle
@@ -93,7 +96,7 @@ impl CommitLog {
     pub async fn begin_transaction(&mut self, tx: &Transaction) -> Result<()> {
         let line = BeginTx(tx.clone());
         let bytes = line.encode()?;
-        let logfile = self.get_write_handle();
+        let logfile = self.get_write_handle().await?;
         logfile.write_all(bytes.as_slice()).await?;
         // TODO this is expensive. Should we relax the durability guarantee a bit,
         // say by syncing the logfile every n seconds or something?
@@ -105,7 +108,7 @@ impl CommitLog {
     pub async fn end_transaction(&mut self, tx_id: &Uuid) -> Result<()> {
         let line = EndTx(tx_id.clone());
         let bytes = line.encode()?;
-        let logfile = self.get_write_handle();
+        let logfile = self.get_write_handle().await?;
         logfile.write_all(bytes.as_slice()).await?;
         // TODO this is expensive. Should we relax the durability guarantee a bit,
         // say by syncing the logfile every n seconds or something?
@@ -159,14 +162,14 @@ mod tests {
 
     use super::CommitLog;
 
-    async fn get_commit_log() -> Result<CommitLog> {
+    fn get_commit_log() -> CommitLog {
         let path = env::temp_dir().join(format!("commit_log_{}", Uuid::new_v4()));
-        CommitLog::initialize(path.as_path()).await
+        CommitLog::new(path.as_ref())
     }
 
     #[tokio::test]
     async fn test_end_to_end() -> Result<()> {
-        let mut commit_log = self::get_commit_log().await?;
+        let mut commit_log = self::get_commit_log();
         let tx1 = Transaction::with_random_id(vec![Operation::set("foo", b"bar")]);
         let tx2 = Transaction::with_random_id(vec![Operation::set("foo", b"bar")]);
         let tx3 = Transaction::with_random_id(vec![Operation::set("foo", b"bar")]);
@@ -184,7 +187,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_log() -> Result<()> {
-        let commit_log = self::get_commit_log().await?;
+        let commit_log = self::get_commit_log();
         let unfinished_txs = commit_log.get_unfinished_transactions().await?;
         let empty: Vec<Transaction> = vec![];
         assert_eq!(empty, unfinished_txs);

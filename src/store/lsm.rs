@@ -55,9 +55,9 @@ impl Value {
 }
 
 impl LSMStore {
-    pub async fn initialize(config: &Config) -> Result<Self> {
-        let commit_log = CommitLog::initialize(config.commit_log_path.as_path()).await?;
-        let mut store = Self {
+    pub fn new(data_dir: &Path, commit_log_path: &Path, memtable_max_mb: u64) -> Self {
+        let commit_log = CommitLog::new(commit_log_path);
+        Self {
             data: Arc::new(RwLock::new(LSMData {
                 memtable: RBMap::new(),
                 tx_ids: Vec::new(),
@@ -65,12 +65,30 @@ impl LSMStore {
             commit_log: Arc::new(RwLock::new(commit_log)),
             // TODO what is the optimal number of items for the bloom filter?
             bloom_filter: Arc::new(RwLock::new(BloomFilter::optimal(Murmur3, 512, 0.01))),
-            data_dir: config.data_dir.clone(),
-            memtable_max_bytes: config.memtable_max_mb * 1_000_000,
-        };
-        store.restore_previous_txs().await?;
-        // TODO once bloom filter is persisted to disk, restore it here
+            data_dir: data_dir.to_path_buf(),
+            memtable_max_bytes: memtable_max_mb * 1_000_000,
+        }
+    }
+
+    pub fn from_config(config: &Config) -> Self {
+        Self::new(
+            config.data_dir.as_path(),
+            config.commit_log_path.as_path(),
+            config.memtable_max_mb,
+        )
+    }
+
+    pub async fn initialize_from_config(config: &Config) -> Result<Self> {
+        let mut store = Self::from_config(config);
+        store.initialize().await?;
         Ok(store)
+    }
+
+    pub async fn initialize(&mut self) -> Result<()> {
+        // TODO once bloom filter is persisted to disk, restore it here
+        self.restore_previous_txs().await?;
+        self.start_background_tasks();
+        Ok(())
     }
 
     async fn restore_previous_txs(&mut self) -> Result<()> {
