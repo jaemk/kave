@@ -20,6 +20,7 @@ use super::Value;
 // to load the keys into memory to search the stream instead of the
 // values as well.
 
+#[derive(Debug)]
 pub struct SSTable {
     filepath: PathBuf,
 }
@@ -33,8 +34,9 @@ impl SSTable {
 
     async fn file_handle(&self) -> Result<File> {
         match OpenOptions::new()
-            .create(true)
+            .read(true)
             .write(true)
+            .create(true)
             .open(&self.filepath)
             .await
         {
@@ -55,6 +57,7 @@ impl SSTable {
         let mut file = self.file_handle().await?;
         let buf = &mut bincode::serialize(memtable)?;
         file.write_all(buf.as_slice()).await?;
+        file.sync_all().await?;
         Ok(())
     }
 

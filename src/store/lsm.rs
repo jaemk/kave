@@ -56,7 +56,7 @@ impl Value {
 }
 
 impl LSMStore {
-    pub fn new(data_dir: &Path, commit_log_path: &Path, memtable_max_mb: usize) -> Self {
+    pub fn new(data_dir: &Path, commit_log_path: &Path, memtable_max_bytes: usize) -> Self {
         let commit_log = CommitLog::new(commit_log_path);
         Self {
             data: Arc::new(RwLock::new(LSMData {
@@ -67,7 +67,7 @@ impl LSMStore {
             // TODO what is the optimal number of items for the bloom filter?
             bloom_filter: Arc::new(RwLock::new(BloomFilter::optimal(Murmur3, 512, 0.01))),
             data_dir: data_dir.to_path_buf(),
-            memtable_max_bytes: memtable_max_mb * 1_000_000,
+            memtable_max_bytes,
         }
     }
 
@@ -75,7 +75,7 @@ impl LSMStore {
         Self::new(
             config.data_dir.as_path(),
             config.commit_log_path.as_path(),
-            config.memtable_max_mb,
+            config.memtable_max_mb * 1_000_000,
         )
     }
 
@@ -134,8 +134,9 @@ impl LSMStore {
         memtable_max_bytes: usize,
     ) -> Result<bool> {
         let data = shared_data.read().await;
-        let size: usize = mem::size_of_val(&data.memtable);
-        return Ok(size >= memtable_max_bytes);
+        return Ok(
+            data.memtable.len() > 0 && mem::size_of_val(&data.memtable) >= memtable_max_bytes
+        );
     }
 
     /// Returns a vector of SSTable paths, ordered from newest to oldest.
@@ -144,7 +145,7 @@ impl LSMStore {
         let mut dir = fs::read_dir(&self.data_dir).await?;
         while let Some(file) = dir.next_entry().await? {
             if let Some(ext) = file.path().extension() {
-                if ext == ".sst" {
+                if ext == "sst" {
                     sstables.push(file.path());
                 };
             };
@@ -155,7 +156,7 @@ impl LSMStore {
 
     async fn search_sstables(&self, key: &str) -> Result<Option<Value>> {
         for path in self.get_sstables().await? {
-            let sstable = SSTable::new(path);
+            let sstable = SSTable::new(&path);
             let v = sstable.search(key.to_owned()).await?;
             if v.is_some() {
                 return Ok(v);
@@ -205,21 +206,20 @@ impl Store for LSMStore {
 
     async fn transact(&mut self, transaction: Transaction) -> Result<()> {
         let mut commit_log = self.commit_log.write().await;
-        let tx_ids = &mut self.data.write().await.tx_ids;
+        let mut data = self.data.write().await;
+        let tx_ids = &mut data.tx_ids;
         tx_ids.push(transaction.id.clone());
         commit_log.begin_transaction(&transaction).await?;
-        let mut store = self.data.write().await;
         let mut bloom_filter = self.bloom_filter.write().await;
         for instruction in transaction.operations {
             match instruction {
                 Set(key, value) => {
-                    store
-                        .memtable
+                    data.memtable
                         .insert(key.to_string(), Value::Data(value.to_vec()));
                     bloom_filter.insert(key.as_bytes());
                 }
                 Delete(key) => {
-                    store.memtable.insert(key.to_string(), Value::Tombstone);
+                    data.memtable.insert(key.to_string(), Value::Tombstone);
                 }
             };
         }
@@ -264,22 +264,22 @@ mod tests {
             b"foobar".to_vec(),
             store.get("foo").await?.expect("Could not find key")
         );
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_millis(1000)).await;
         assert_eq!(
             b"foobar".to_vec(),
             store.get("foo").await?.expect("Could not find key")
         );
-        let mut count = 0;
+        let mut sst_file_count = 0;
         let mut dir = tokio::fs::read_dir(store.data_dir.as_path()).await?;
         while let Some(entry) = dir.next_entry().await? {
             if let Some(ext) = entry.path().extension() {
-                if ext == ".sst" {
-                    count += 1
+                if ext == "sst" {
+                    sst_file_count += 1
                 };
             };
         }
-        assert_eq!(1, count);
-        assert_eq!(count, store.get_sstables().await?.len());
+        assert_eq!(1, sst_file_count);
+        assert_eq!(sst_file_count, store.get_sstables().await?.len());
         Ok(())
     }
 }
