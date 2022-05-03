@@ -63,7 +63,7 @@ pub struct Config {
     pub commit_log_path: PathBuf,
 
     // how big the memtable can get before being flushed to disk
-    pub memtable_max_mb: u64,
+    pub memtable_max_mb: usize,
 }
 impl Config {
     pub fn load() -> Self {

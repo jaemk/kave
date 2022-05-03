@@ -1,6 +1,7 @@
 mod commit_log;
 mod sstable;
 
+use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,7 +32,7 @@ pub struct LSMStore {
     commit_log: Shared<CommitLog>,
     bloom_filter: Shared<BloomFilter<Murmur3>>,
     data_dir: PathBuf,
-    memtable_max_bytes: u64,
+    memtable_max_bytes: usize,
 }
 
 struct LSMData {
@@ -55,7 +56,7 @@ impl Value {
 }
 
 impl LSMStore {
-    pub fn new(data_dir: &Path, commit_log_path: &Path, memtable_max_mb: u64) -> Self {
+    pub fn new(data_dir: &Path, commit_log_path: &Path, memtable_max_mb: usize) -> Self {
         let commit_log = CommitLog::new(commit_log_path);
         Self {
             data: Arc::new(RwLock::new(LSMData {
@@ -130,10 +131,10 @@ impl LSMStore {
     /// Whether the memtable has grown big enough to flush to disk.
     async fn should_flush_memtable(
         shared_data: Shared<LSMData>,
-        memtable_max_bytes: u64,
+        memtable_max_bytes: usize,
     ) -> Result<bool> {
         let data = shared_data.read().await;
-        let size = bincode::serialized_size(&data.memtable)?;
+        let size: usize = mem::size_of_val(&data.memtable);
         return Ok(size >= memtable_max_bytes);
     }
 
@@ -142,7 +143,11 @@ impl LSMStore {
         let mut sstables = Vec::new();
         let mut dir = fs::read_dir(&self.data_dir).await?;
         while let Some(file) = dir.next_entry().await? {
-            sstables.push(file.path());
+            if let Some(ext) = file.path().extension() {
+                if ext == ".sst" {
+                    sstables.push(file.path());
+                };
+            };
         }
         sstables.sort_by(|a, b| b.cmp(a));
         Ok(sstables)
@@ -218,6 +223,63 @@ impl Store for LSMStore {
                 }
             };
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{env, time::Duration};
+
+    use tokio::fs::DirBuilder;
+    use uuid::Uuid;
+
+    use crate::{
+        store::{Operation, Store, Transaction},
+        Result,
+    };
+
+    use super::LSMStore;
+
+    async fn setup_db(memtable_max_bytes: usize) -> Result<LSMStore> {
+        let data_dir = env::temp_dir().join(Uuid::new_v4().to_string());
+        DirBuilder::new().create(data_dir.as_path()).await?;
+        Ok(LSMStore::new(
+            data_dir.as_path(),
+            data_dir.join("commit_log").as_path(),
+            memtable_max_bytes,
+        ))
+    }
+
+    #[tokio::test]
+    async fn test_end_to_end() -> Result<()> {
+        let mut store = self::setup_db(1).await?;
+        store.initialize().await?;
+        store
+            .transact(Transaction::with_random_id(vec![Operation::set(
+                "foo", b"foobar",
+            )]))
+            .await?;
+        assert_eq!(
+            b"foobar".to_vec(),
+            store.get("foo").await?.expect("Could not find key")
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(
+            b"foobar".to_vec(),
+            store.get("foo").await?.expect("Could not find key")
+        );
+        let mut count = 0;
+        let mut dir = tokio::fs::read_dir(store.data_dir.as_path()).await?;
+        while let Some(entry) = dir.next_entry().await? {
+            if let Some(ext) = entry.path().extension() {
+                if ext == ".sst" {
+                    count += 1
+                };
+            };
+        }
+        assert_eq!(1, count);
+        assert_eq!(count, store.get_sstables().await?.len());
         Ok(())
     }
 }
