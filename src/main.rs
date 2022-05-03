@@ -23,7 +23,8 @@ async fn run() -> Result<()> {
     let (svr_shutdown_send, mut svr_shutdown_recv) = tokio::sync::mpsc::unbounded_channel();
     let (sig_shutdown_send, sig_shutdown_recv) = tokio::sync::mpsc::unbounded_channel();
 
-    let store = kave::store::MemoryStore::new(1_000);
+    let store = kave::store::lsm::LSMStore::initialize(&config).await?;
+    store.start_background_tasks();
     let svr = Server::new(svr_shutdown_send, sig_shutdown_recv, certs, keys, store);
     tokio::spawn(async move { svr.start().await });
     tracing::info!("server spawned");
