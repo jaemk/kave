@@ -93,14 +93,6 @@ impl LSMStore {
         Ok(())
     }
 
-    pub async fn shutdown(self) -> Result<()> {
-        let data = self.data.clone();
-        let commit_log = self.commit_log.clone();
-        Self::write_sstable(data.clone(), self.data_dir.as_path(), commit_log).await?;
-        Self::write_bloom_filter(data.clone(), self.data_dir.as_path()).await?;
-        Ok(())
-    }
-
     async fn restore_previous_txs(&mut self) -> Result<()> {
         let commit_log_ref = self.commit_log.clone();
         let commit_log = commit_log_ref.read().await;
@@ -262,6 +254,14 @@ impl Store for LSMStore {
                 }
             };
         }
+        Ok(())
+    }
+
+    async fn shutdown(&mut self) -> Result<()> {
+        let data = self.data.clone();
+        let commit_log = self.commit_log.clone();
+        Self::write_sstable(data.clone(), self.data_dir.as_path(), commit_log).await?;
+        Self::write_bloom_filter(data.clone(), self.data_dir.as_path()).await?;
         Ok(())
     }
 }

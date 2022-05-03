@@ -49,6 +49,7 @@ pub trait Store {
     async fn get(&mut self, k: &str) -> Result<Option<Vec<u8>>>;
     /// Returns a vec with the previous values of the keys, if any
     async fn transact(&mut self, transaction: Transaction) -> Result<()>;
+    async fn shutdown(&mut self) -> Result<()>;
 }
 
 /// A basic in memory store for testing
@@ -70,6 +71,7 @@ impl Store for MemoryStore {
         let mut data = self.data.lock().await;
         Ok(data.cache_get(&k.to_string()).cloned())
     }
+
     async fn transact(&mut self, transaction: Transaction) -> Result<()> {
         let mut data = self.data.lock().await;
         for instruction in transaction.operations {
@@ -78,6 +80,10 @@ impl Store for MemoryStore {
                 Delete(key) => data.cache_remove(&key.to_string()),
             };
         }
+        Ok(())
+    }
+
+    async fn shutdown(&mut self) -> Result<()> {
         Ok(())
     }
 }
