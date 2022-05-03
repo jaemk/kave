@@ -1,7 +1,14 @@
+use std::path::PathBuf;
+
 use crate::error::Error;
-fn env_or(k: &str, default: &str) -> String {
+
+fn get_env(k: &str) -> Option<String> {
     tracing::debug!("loading env var: {k:?}");
-    std::env::var(k).unwrap_or_else(|_| default.to_string())
+    std::env::var(k).ok()
+}
+
+fn env_or(k: &str, default: &str) -> String {
+    get_env(k).unwrap_or(default.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +55,13 @@ pub struct Config {
     // key used for signing/hashing things
     pub signing_key: String,
 
+    // directory where data files should be stored
+    pub data_dir: PathBuf,
+
+    // file where commit log should be written
+    // in production, this should be on a different disk than the data_dir
+    pub commit_log_path: PathBuf,
+
     // how big the memtable can get before being flushed to disk
     pub memtable_max_mb: u64,
 }
@@ -73,6 +87,14 @@ impl Config {
                 .expect("invalid LOG_FORMAT"),
             encryption_key: env_or("ENCRYPTION_KEY", "01234567890123456789012345678901"),
             signing_key: env_or("SIGNING_KEY", "01234567890123456789012345678901"),
+            data_dir: match get_env("DATA_DIR") {
+                Some(dir) => PathBuf::from(dir),
+                None => std::env::temp_dir(),
+            },
+            commit_log_path: match get_env("COMMIT_LOG_PATH") {
+                Some(path) => PathBuf::from(path),
+                None => std::env::temp_dir().join("commit_log"),
+            },
             memtable_max_mb: env_or("MEMTABLE_MAX_MB", "256")
                 .parse()
                 .expect("Not a number"),

@@ -25,10 +25,11 @@ use crate::{utils, Config};
 type Shared<T> = Arc<RwLock<T>>;
 
 /// A store backed by a [log-structured merge tree](http://www.benstopford.com/2015/02/14/log-structured-merge-trees)
+#[derive(Clone)]
 pub struct LSMStore {
     data: Shared<LSMData>,
     commit_log: Shared<CommitLog>,
-    bloom_filter: BloomFilter<Murmur3>,
+    bloom_filter: Shared<BloomFilter<Murmur3>>,
     data_dir: PathBuf,
     memtable_max_bytes: u64,
 }
@@ -54,12 +55,8 @@ impl Value {
 }
 
 impl LSMStore {
-    pub async fn initialize(
-        config: &Config,
-        commit_log_path: &Path,
-        data_dir: &Path,
-    ) -> Result<Self> {
-        let commit_log = CommitLog::initialize(commit_log_path).await?;
+    pub async fn initialize(config: &Config) -> Result<Self> {
+        let commit_log = CommitLog::initialize(config.commit_log_path.as_path()).await?;
         let mut store = Self {
             data: Arc::new(RwLock::new(LSMData {
                 memtable: RBMap::new(),
@@ -67,8 +64,8 @@ impl LSMStore {
             })),
             commit_log: Arc::new(RwLock::new(commit_log)),
             // TODO what is the optimal number of items for the bloom filter?
-            bloom_filter: BloomFilter::optimal(Murmur3, 512, 0.01),
-            data_dir: data_dir.to_path_buf(),
+            bloom_filter: Arc::new(RwLock::new(BloomFilter::optimal(Murmur3, 512, 0.01))),
+            data_dir: config.data_dir.clone(),
             memtable_max_bytes: config.memtable_max_mb * 1_000_000,
         };
         store.restore_previous_txs().await?;
@@ -169,7 +166,8 @@ impl LSMStore {
 impl Store for LSMStore {
     async fn get(&mut self, k: &str) -> Result<Option<Vec<u8>>> {
         let store = self.data.read().await;
-        if !self.bloom_filter.contains(k.as_bytes()) {
+        let bloom_filter = self.bloom_filter.read().await;
+        if !bloom_filter.contains(k.as_bytes()) {
             return Ok(None);
         }
         let mut result = store
@@ -188,13 +186,14 @@ impl Store for LSMStore {
         tx_ids.push(transaction.id.clone());
         commit_log.begin_transaction(&transaction).await?;
         let mut store = self.data.write().await;
+        let mut bloom_filter = self.bloom_filter.write().await;
         for instruction in transaction.operations {
             match instruction {
                 Set(key, value) => {
                     store
                         .memtable
                         .insert(key.to_string(), Value::Data(value.to_vec()));
-                    self.bloom_filter.insert(key.as_bytes());
+                    bloom_filter.insert(key.as_bytes());
                 }
                 Delete(key) => {
                     store.memtable.insert(key.to_string(), Value::Tombstone);
