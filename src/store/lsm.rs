@@ -275,7 +275,11 @@ impl Store for LSMStore {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, time::Duration};
+    use std::{
+        env,
+        path::{Path, PathBuf},
+        time::Duration,
+    };
 
     use tokio::fs::DirBuilder;
     use uuid::Uuid;
@@ -287,19 +291,24 @@ mod tests {
 
     use super::LSMStore;
 
-    async fn setup_db(memtable_max_bytes: usize) -> Result<LSMStore> {
+    async fn test_data_dir() -> Result<PathBuf> {
         let data_dir = env::temp_dir().join(Uuid::new_v4().to_string());
         DirBuilder::new().create(data_dir.as_path()).await?;
-        Ok(LSMStore::new(
-            data_dir.as_path(),
+        Ok(data_dir)
+    }
+
+    fn setup_db(data_dir: &Path, memtable_max_bytes: usize) -> LSMStore {
+        LSMStore::new(
+            data_dir,
             data_dir.join("commit_log").as_path(),
             memtable_max_bytes,
-        ))
+        )
     }
 
     #[tokio::test]
     async fn test_end_to_end() -> Result<()> {
-        let mut store = self::setup_db(1).await?;
+        let data_dir = self::test_data_dir().await?;
+        let mut store = self::setup_db(data_dir.as_path(), 1);
         store.initialize().await?;
         store
             .transact(Transaction::with_random_id(vec![Operation::set(
@@ -326,6 +335,26 @@ mod tests {
         }
         assert_eq!(1, sst_file_count);
         assert_eq!(sst_file_count, store.get_sstables().await?.len());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_recovery() -> Result<()> {
+        let data_dir = self::test_data_dir().await?;
+        {
+            let mut store = self::setup_db(data_dir.as_path(), 1000);
+            store
+                .transact(Transaction::with_random_id(vec![
+                    (Operation::set("foo", b"bar")),
+                ]))
+                .await?;
+        }
+        let mut store = self::setup_db(data_dir.as_path(), 1000);
+        store.initialize().await?;
+        assert_eq!(
+            b"bar".to_vec(),
+            store.get("foo").await?.expect("Could not find key")
+        );
         Ok(())
     }
 }
