@@ -97,7 +97,7 @@ impl LSMStore {
         let commit_log_ref = self.commit_log.clone();
         let commit_log = commit_log_ref.read().await;
         for tx in commit_log.get_unfinished_transactions().await? {
-            self.transact(tx).await?
+            self.do_transact(tx, false).await?
         }
         Ok(())
     }
@@ -218,6 +218,29 @@ impl LSMStore {
         data.bloom_filter = bloom_filter;
         Ok(())
     }
+
+    async fn do_transact(&mut self, transaction: Transaction, log_commit: bool) -> Result<()> {
+        if log_commit {
+            let mut commit_log = self.commit_log.write().await;
+            commit_log.begin_transaction(&transaction).await?;
+        }
+        let mut data = self.data.write().await;
+        let tx_ids = &mut data.tx_ids;
+        tx_ids.push(transaction.id.clone());
+        for instruction in transaction.operations {
+            match instruction {
+                Set(key, value) => {
+                    data.memtable
+                        .insert(key.to_string(), Value::Data(value.to_vec()));
+                    data.bloom_filter.insert(key.as_bytes());
+                }
+                Delete(key) => {
+                    data.memtable.insert(key.to_string(), Value::Tombstone);
+                }
+            };
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -238,24 +261,7 @@ impl Store for LSMStore {
     }
 
     async fn transact(&mut self, transaction: Transaction) -> Result<()> {
-        let mut commit_log = self.commit_log.write().await;
-        let mut data = self.data.write().await;
-        let tx_ids = &mut data.tx_ids;
-        tx_ids.push(transaction.id.clone());
-        commit_log.begin_transaction(&transaction).await?;
-        for instruction in transaction.operations {
-            match instruction {
-                Set(key, value) => {
-                    data.memtable
-                        .insert(key.to_string(), Value::Data(value.to_vec()));
-                    data.bloom_filter.insert(key.as_bytes());
-                }
-                Delete(key) => {
-                    data.memtable.insert(key.to_string(), Value::Tombstone);
-                }
-            };
-        }
-        Ok(())
+        self.do_transact(transaction, true).await
     }
 
     async fn shutdown(&mut self) -> Result<()> {
