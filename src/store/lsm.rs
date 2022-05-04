@@ -155,6 +155,8 @@ impl LSMStore {
         }
         if desc {
             sstables.sort_by(|a, b| b.cmp(a));
+        } else {
+            sstables.sort();
         }
         Ok(sstables)
     }
