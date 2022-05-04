@@ -1,9 +1,8 @@
 //! Sorted-string table data file format
 
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use crate::{Error, Result};
-use rb_tree::RBMap;
 use tokio::{
     fs::{self, File, OpenOptions},
     io::{AsyncReadExt, AsyncWriteExt},
@@ -46,7 +45,7 @@ impl SSTable {
     }
 
     /// Writes the memtable to disk as an SSTable
-    pub async fn write(&self, memtable: &RBMap<String, Value>) -> Result<()> {
+    pub async fn write(&self, memtable: &BTreeMap<String, Value>) -> Result<()> {
         match fs::metadata(&self.filepath).await {
             Ok(_) => Err(Error::E(format!(
                 "File {} already exists",
@@ -66,7 +65,7 @@ impl SSTable {
         let mut file = self.file_handle().await?;
         let mut buf = Vec::new();
         file.read_to_end(&mut buf).await?;
-        let memtable: RBMap<String, Value> = bincode::deserialize(buf.as_slice())?;
+        let memtable: BTreeMap<String, Value> = bincode::deserialize(buf.as_slice())?;
         Ok(memtable.get(&key).map(|v| v.to_owned()))
     }
 }

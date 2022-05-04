@@ -1,6 +1,7 @@
 mod commit_log;
 mod sstable;
 
+use std::collections::BTreeMap;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,7 +9,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use growable_bloom_filter::GrowableBloom;
-use rb_tree::RBMap;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -36,7 +36,7 @@ pub struct LSMStore {
 }
 
 struct LSMData {
-    memtable: RBMap<String, Value>,
+    memtable: BTreeMap<String, Value>,
     tx_ids: Vec<Uuid>,
     bloom_filter: GrowableBloom,
 }
@@ -61,7 +61,7 @@ impl LSMStore {
         let commit_log = CommitLog::new(commit_log_path);
         Self {
             data: Arc::new(RwLock::new(LSMData {
-                memtable: RBMap::new(),
+                memtable: BTreeMap::new(),
                 tx_ids: Vec::new(),
                 // TODO what is the optimal number of items for the bloom filter?
                 bloom_filter: GrowableBloom::new(0.01, 512),
@@ -179,7 +179,7 @@ impl LSMStore {
         let sstable = SSTable::new(path);
         let mut data = shared_data.write().await;
         sstable.write(&data.memtable).await?;
-        data.memtable = RBMap::new();
+        data.memtable = BTreeMap::new();
         let mut commit_log = commit_log.write().await;
         for tx_id in &data.tx_ids {
             commit_log.end_transaction(tx_id).await?;
