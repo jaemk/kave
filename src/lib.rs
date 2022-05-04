@@ -4,6 +4,7 @@ pub mod crypto;
 pub mod error;
 pub mod server;
 pub mod store;
+pub mod utils;
 
 pub use config::Config;
 pub use error::{Error, Result};
