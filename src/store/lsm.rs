@@ -195,6 +195,7 @@ impl LSMStore {
         let buf = bincode::serialize(&data.bloom_filter)?;
         let mut file = OpenOptions::new()
             .write(true)
+            .create(true)
             .truncate(true)
             .open(path)
             .await?;
