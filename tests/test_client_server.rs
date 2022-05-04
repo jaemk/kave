@@ -23,7 +23,7 @@ fn new_client_server() -> (
         sig_client_shutdown_recv,
         certs,
         keys,
-        MemoryStore::new(100),
+        MemoryStore::new(),
     );
     (
         sig_client_shutdown_send,

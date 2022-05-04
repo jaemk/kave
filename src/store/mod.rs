@@ -3,9 +3,9 @@ pub mod lsm;
 use self::Operation::{Delete, Set};
 use crate::Result;
 use async_trait::async_trait;
-use cached::{stores::SizedCache, Cached};
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -47,7 +47,8 @@ impl Transaction {
 #[async_trait]
 pub trait Store {
     async fn get(&mut self, k: &str) -> Result<Option<Vec<u8>>>;
-    /// Returns a vec with the previous values of the keys, if any
+    /// Returns all values with keys from `from` (inclusive) to `to` (exclusive).
+    async fn scan(&mut self, from_inclusive: &str, to_exclusive: &str) -> Result<Vec<Vec<u8>>>;
     async fn transact(&mut self, transaction: Transaction) -> Result<()>;
     async fn shutdown(&mut self) -> Result<()>;
 }
@@ -55,12 +56,12 @@ pub trait Store {
 /// A basic in memory store for testing
 #[derive(Clone)]
 pub struct MemoryStore {
-    data: Arc<Mutex<SizedCache<String, Vec<u8>>>>,
+    data: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
 }
 impl MemoryStore {
-    pub fn new(size: usize) -> Self {
+    pub fn new() -> Self {
         Self {
-            data: Arc::new(Mutex::new(SizedCache::with_size(size))),
+            data: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 }
@@ -68,16 +69,26 @@ impl MemoryStore {
 #[async_trait]
 impl Store for MemoryStore {
     async fn get(&mut self, k: &str) -> Result<Option<Vec<u8>>> {
-        let mut data = self.data.lock().await;
-        Ok(data.cache_get(&k.to_string()).cloned())
+        let data = self.data.lock().await;
+        Ok(data.get(&k.to_string()).cloned())
+    }
+
+    async fn scan(&mut self, from_inclusive: &str, to_exclusive: &str) -> Result<Vec<Vec<u8>>> {
+        let data = self.data.lock().await;
+        let result = data
+            .range(from_inclusive.to_string()..to_exclusive.to_string())
+            .into_iter()
+            .map(|(_, v)| v.to_owned())
+            .collect_vec();
+        Ok(result)
     }
 
     async fn transact(&mut self, transaction: Transaction) -> Result<()> {
         let mut data = self.data.lock().await;
         for instruction in transaction.operations {
             match instruction {
-                Set(key, value) => data.cache_set(key.to_string(), value.to_vec()),
-                Delete(key) => data.cache_remove(&key.to_string()),
+                Set(key, value) => data.insert(key.to_string(), value.to_vec()),
+                Delete(key) => data.remove(&key.to_string()),
             };
         }
         Ok(())

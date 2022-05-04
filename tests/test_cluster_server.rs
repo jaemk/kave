@@ -21,7 +21,7 @@ fn new_cluster_server() -> (
         sig_shutdown_recv,
         certs,
         keys,
-        MemoryStore::new(100),
+        MemoryStore::new(),
     );
     (sig_shutdown_send, svr_shutdown_recv, svr)
 }

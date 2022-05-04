@@ -3,6 +3,7 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use crate::{Error, Result};
+use itertools::Itertools;
 use tokio::{
     fs::{self, File, OpenOptions},
     io::{AsyncReadExt, AsyncWriteExt},
@@ -67,5 +68,21 @@ impl SSTable {
         file.read_to_end(&mut buf).await?;
         let memtable: BTreeMap<String, Value> = bincode::deserialize(buf.as_slice())?;
         Ok(memtable.get(&key).map(|v| v.to_owned()))
+    }
+
+    pub async fn scan(
+        &self,
+        from_inclusive: &str,
+        to_exclusive: &str,
+    ) -> Result<Vec<(String, Value)>> {
+        let mut file = self.file_handle().await?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).await?;
+        let memtable: BTreeMap<String, Value> = bincode::deserialize(buf.as_slice())?;
+        Ok(memtable
+            .range(from_inclusive.to_string()..to_exclusive.to_string())
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect_vec())
     }
 }
