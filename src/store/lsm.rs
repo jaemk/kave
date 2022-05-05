@@ -31,7 +31,7 @@ type Shared<T> = Arc<RwLock<T>>;
 const BLOOM_ERROR_PROB: f64 = 0.01;
 const BLOOM_EST_INSERTIONS: usize = 512;
 
-/// A store backed by a [log-structured merge tree](http://www.benstopford.com/2015/02/14/log-structured-merge-trees)
+/// A store backed by a [log-structured merge tree](http://www.benstopford.com/2015/02/14/log-structured-merge-trees).
 #[derive(Clone)]
 pub struct LSMStore {
     data: Shared<LSMData>,
