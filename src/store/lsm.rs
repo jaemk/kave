@@ -141,7 +141,7 @@ impl LSMStore {
         Ok(())
     }
 
-    pub fn start_background_tasks(&self) {
+    fn start_background_tasks(&self) {
         let data = self.data.clone();
         let data_dir = self.data_dir.clone();
         let commit_log = self.commit_log.clone();
