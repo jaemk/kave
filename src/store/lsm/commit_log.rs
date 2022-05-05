@@ -67,6 +67,10 @@ impl CommitLog {
         }
     }
 
+    pub fn path(&self) -> &Path {
+        self.log_path.as_path()
+    }
+
     /// Returns the shared open file handle
     async fn get_write_handle(&mut self) -> Result<&mut File> {
         if self.logfile.is_none() {

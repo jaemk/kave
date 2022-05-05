@@ -1,8 +1,9 @@
 mod commit_log;
 mod sstable;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::mem;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,13 +27,20 @@ use crate::{utils, Config};
 
 type Shared<T> = Arc<RwLock<T>>;
 
+// TODO what are the optimal values for these bloom filter parameters?
+const BLOOM_ERROR_PROB: f64 = 0.01;
+const BLOOM_EST_INSERTIONS: usize = 512;
+
 /// A store backed by a [log-structured merge tree](http://www.benstopford.com/2015/02/14/log-structured-merge-trees)
 #[derive(Clone)]
 pub struct LSMStore {
     data: Shared<LSMData>,
     commit_log: Shared<CommitLog>,
+    index: Shared<HashMap<PathBuf, RangeInclusive<String>>>,
     data_dir: PathBuf,
     memtable_max_bytes: usize,
+    bloom_filter_path: PathBuf,
+    index_path: PathBuf,
 }
 
 struct LSMData {
@@ -48,7 +56,7 @@ pub enum Value {
 }
 
 impl Value {
-    pub fn as_option(&self) -> Option<Vec<u8>> {
+    fn as_option(&self) -> Option<Vec<u8>> {
         match self {
             Data(data) => Some(data.to_vec()),
             Tombstone => None,
@@ -57,22 +65,24 @@ impl Value {
 }
 
 impl LSMStore {
-    pub fn new(data_dir: &Path, commit_log_path: &Path, memtable_max_bytes: usize) -> Self {
+    fn new(data_dir: &Path, commit_log_path: &Path, memtable_max_bytes: usize) -> Self {
         let commit_log = CommitLog::new(commit_log_path);
         Self {
             data: Arc::new(RwLock::new(LSMData {
                 memtable: BTreeMap::new(),
                 tx_ids: Vec::new(),
-                // TODO what is the optimal number of items for the bloom filter?
-                bloom_filter: GrowableBloom::new(0.01, 512),
+                bloom_filter: GrowableBloom::new(BLOOM_ERROR_PROB, BLOOM_EST_INSERTIONS),
             })),
             commit_log: Arc::new(RwLock::new(commit_log)),
+            index: Arc::new(RwLock::new(HashMap::new())),
             data_dir: data_dir.to_path_buf(),
             memtable_max_bytes,
+            bloom_filter_path: data_dir.join("bloom_filter"),
+            index_path: data_dir.join("sst_index"),
         }
     }
 
-    pub fn from_config(config: &Config) -> Self {
+    fn from_config(config: &Config) -> Self {
         Self::new(
             config.data_dir.as_path(),
             config.commit_log_path.as_path(),
@@ -86,11 +96,40 @@ impl LSMStore {
         Ok(store)
     }
 
-    pub async fn initialize(&mut self) -> Result<()> {
-        self.restore_bloom_filter().await?;
+    async fn initialize(&mut self) -> Result<()> {
+        let bloom_filter = self.restore_bloom_filter().await?;
+        let index = self.restore_index().await?;
+        if let (Some(bloom), Some(idx)) = (bloom_filter, index) {
+            let mut data = self.data.write().await;
+            data.bloom_filter = bloom;
+            self.index = Arc::new(RwLock::new(idx))
+        } else {
+            let (bloom, idx) = self.index_sstables().await?;
+            let mut data = self.data.write().await;
+            data.bloom_filter = bloom;
+            self.index = Arc::new(RwLock::new(idx))
+        }
         self.restore_previous_txs().await?;
         self.start_background_tasks();
         Ok(())
+    }
+
+    async fn index_sstables(
+        &self,
+    ) -> Result<(GrowableBloom, HashMap<PathBuf, RangeInclusive<String>>)> {
+        let mut bloom = GrowableBloom::new(BLOOM_ERROR_PROB, BLOOM_EST_INSERTIONS);
+        let mut index = HashMap::new();
+        for path in self.get_sstables_asc().await? {
+            let sstable = SSTable::new(path.as_path());
+            let keys = sstable.keys().await?;
+            let first = keys.first().unwrap().to_string();
+            let last = keys.last().unwrap().to_string();
+            index.insert(path.clone(), first..=last);
+            for key in keys {
+                bloom.insert(key);
+            }
+        }
+        Ok((bloom, index))
     }
 
     async fn restore_previous_txs(&mut self) -> Result<()> {
@@ -106,6 +145,7 @@ impl LSMStore {
         let data = self.data.clone();
         let data_dir = self.data_dir.clone();
         let commit_log = self.commit_log.clone();
+        let index = self.index.clone();
         let memtable_max_bytes = self.memtable_max_bytes;
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -119,12 +159,10 @@ impl LSMStore {
                         data.clone(),
                         data_dir.clone().as_path(),
                         commit_log.clone(),
+                        index.clone(),
                     )
                     .await
                     .expect("Failed to flush memtable");
-                    Self::write_bloom_filter(data.clone(), data_dir.clone().as_path())
-                        .await
-                        .expect("Failed to write bloom filter");
                 };
             }
         });
@@ -142,8 +180,8 @@ impl LSMStore {
         );
     }
 
-    /// Returns a vector of SSTable paths, ordered from newest to oldest.
-    async fn get_sstables(&self, desc: bool) -> Result<Vec<PathBuf>> {
+    /// Returns a vector of SSTable paths, ordered from oldest to newest.
+    async fn get_sstables_asc(&self) -> Result<Vec<PathBuf>> {
         let mut sstables = Vec::new();
         let mut dir = fs::read_dir(&self.data_dir).await?;
         while let Some(file) = dir.next_entry().await? {
@@ -153,16 +191,22 @@ impl LSMStore {
                 };
             };
         }
-        if desc {
-            sstables.sort_by(|a, b| b.cmp(a));
-        } else {
-            sstables.sort();
-        }
+        sstables.sort();
         Ok(sstables)
     }
 
+    async fn sstables_for_key(&self, key: &str) -> Vec<PathBuf> {
+        let key = key.to_string();
+        let index = self.index.read().await;
+        index
+            .iter()
+            .filter(|(_, range)| range.contains(&key))
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+
     async fn search_sstables(&self, key: &str) -> Result<Option<Value>> {
-        for path in self.get_sstables(true).await? {
+        for path in self.sstables_for_key(key).await {
             let sstable = SSTable::new(&path);
             let v = sstable.search(key.to_owned()).await?;
             if v.is_some() {
@@ -178,7 +222,7 @@ impl LSMStore {
         to_exclusive: &str,
     ) -> Result<Vec<(String, Value)>> {
         let mut scan_kvs = BTreeMap::new();
-        for path in self.get_sstables(false).await? {
+        for path in self.get_sstables_asc().await? {
             let sstable = SSTable::new(&path);
             for (k, v) in sstable.scan(from_inclusive, to_exclusive).await? {
                 scan_kvs.insert(k, v);
@@ -193,11 +237,19 @@ impl LSMStore {
         shared_data: Shared<LSMData>,
         data_dir: &Path,
         commit_log: Shared<CommitLog>,
+        index: Shared<HashMap<PathBuf, RangeInclusive<String>>>,
     ) -> Result<()> {
-        let path = data_dir.join(format!("{}.sst", utils::time_since_epoch().as_millis()));
-        let sstable = SSTable::new(path);
         let mut data = shared_data.write().await;
+        if data.memtable.is_empty() {
+            return Ok(());
+        }
+        let path = data_dir.join(format!("{}.sst", utils::time_since_epoch().as_millis()));
+        let sstable = SSTable::new(path.clone());
         sstable.write(&data.memtable).await?;
+        let mut index = index.write().await;
+        let start = data.memtable.iter().next().unwrap().0.clone();
+        let end = data.memtable.iter().next_back().unwrap().0.clone();
+        index.insert(path.clone(), start..=end);
         data.memtable = BTreeMap::new();
         let mut commit_log = commit_log.write().await;
         for tx_id in &data.tx_ids {
@@ -208,34 +260,80 @@ impl LSMStore {
     }
 
     /// Write the bloom filter to disk for later recovery
-    async fn write_bloom_filter(data: Shared<LSMData>, data_dir: &Path) -> Result<()> {
-        let path = data_dir.join("bloom_filter");
+    async fn write_bloom_filter(data: Shared<LSMData>, bloom_path: &Path) -> Result<()> {
         let data = data.read().await;
+        if data.bloom_filter.is_empty() {
+            return Ok(());
+        }
         let buf = bincode::serialize(&data.bloom_filter)?;
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .open(path)
+            .open(bloom_path)
             .await?;
         file.write_all(buf.as_slice()).await?;
         file.sync_all().await?;
         Ok(())
     }
 
-    /// Restore the bloom filter from disk. Overwrites the current bloom filter
-    async fn restore_bloom_filter(&mut self) -> Result<()> {
-        let path = self.data_dir.join("bloom_filter");
+    /// Restore the bloom filter from disk if it is up-to-date with
+    /// the commit log
+    async fn restore_bloom_filter(&mut self) -> Result<Option<GrowableBloom>> {
+        let path = &self.bloom_filter_path;
         if !path.exists() {
-            return Ok(());
+            return Ok(None);
+        }
+        let commit_log = self.commit_log.read().await;
+        let commit_log_mod = fs::metadata(commit_log.path()).await?.modified()?;
+        let filter_file_mod = fs::metadata(path.as_path()).await?.modified()?;
+        if commit_log_mod > filter_file_mod {
+            return Ok(None);
         }
         let mut file = OpenOptions::new().read(true).open(path).await?;
         let mut buf = Vec::new();
-        file.read_buf(&mut buf).await?;
+        file.read_to_end(&mut buf).await?;
         let bloom_filter = bincode::deserialize(buf.as_slice())?;
-        let mut data = self.data.write().await;
-        data.bloom_filter = bloom_filter;
+        Ok(Some(bloom_filter))
+    }
+
+    /// Write the index to disk for later recovery
+    async fn write_index(
+        index: Shared<HashMap<PathBuf, RangeInclusive<String>>>,
+        index_path: &Path,
+    ) -> Result<()> {
+        let index = index.read().await;
+        if index.is_empty() {
+            return Ok(());
+        }
+        let buf = bincode::serialize(&*index)?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(index_path)
+            .await?;
+        file.write_all(buf.as_slice()).await?;
+        file.sync_all().await?;
         Ok(())
+    }
+
+    async fn restore_index(&mut self) -> Result<Option<HashMap<PathBuf, RangeInclusive<String>>>> {
+        let path = &self.index_path;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let commit_log = self.commit_log.read().await;
+        let commit_log_mod = fs::metadata(commit_log.path()).await?.modified()?;
+        let index_file_mod = fs::metadata(path.as_path()).await?.modified()?;
+        if commit_log_mod > index_file_mod {
+            return Ok(None);
+        }
+        let mut file = OpenOptions::new().read(true).open(path).await?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).await?;
+        let index = bincode::deserialize(buf.as_slice())?;
+        Ok(Some(index))
     }
 
     async fn do_transact(&mut self, transaction: Transaction, log_commit: bool) -> Result<()> {
@@ -307,8 +405,16 @@ impl Store for LSMStore {
     async fn shutdown(&mut self) -> Result<()> {
         let data = self.data.clone();
         let commit_log = self.commit_log.clone();
-        Self::write_sstable(data.clone(), self.data_dir.as_path(), commit_log).await?;
-        Self::write_bloom_filter(data.clone(), self.data_dir.as_path()).await?;
+        let index = self.index.clone();
+        Self::write_sstable(
+            data.clone(),
+            self.data_dir.as_path(),
+            commit_log,
+            self.index.clone(),
+        )
+        .await?;
+        Self::write_bloom_filter(data.clone(), self.bloom_filter_path.as_path()).await?;
+        Self::write_index(index.clone(), self.index_path.as_path()).await?;
         Ok(())
     }
 }
@@ -374,12 +480,12 @@ mod tests {
             };
         }
         assert_eq!(1, sst_file_count);
-        assert_eq!(sst_file_count, store.get_sstables(true).await?.len());
+        assert_eq!(sst_file_count, store.get_sstables_asc().await?.len());
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_recovery() -> Result<()> {
+    async fn test_crash_recovery() -> Result<()> {
         let data_dir = self::test_data_dir().await?;
         {
             let mut store = self::setup_db(data_dir.as_path(), 1000);
@@ -388,6 +494,27 @@ mod tests {
                     (Operation::set("foo", b"bar")),
                 ]))
                 .await?;
+        }
+        let mut store = self::setup_db(data_dir.as_path(), 1000);
+        store.initialize().await?;
+        assert_eq!(
+            b"bar".to_vec(),
+            store.get("foo").await?.expect("Could not find key")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_recovery() -> Result<()> {
+        let data_dir = self::test_data_dir().await?;
+        {
+            let mut store = self::setup_db(data_dir.as_path(), 1000);
+            store
+                .transact(Transaction::with_random_id(vec![
+                    (Operation::set("foo", b"bar")),
+                ]))
+                .await?;
+            store.shutdown().await?;
         }
         let mut store = self::setup_db(data_dir.as_path(), 1000);
         store.initialize().await?;
