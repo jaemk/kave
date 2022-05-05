@@ -1,3 +1,4 @@
+//! Persistent disk storage
 pub mod lsm;
 
 use self::Operation::{Delete, Set};

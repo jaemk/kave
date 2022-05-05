@@ -1,3 +1,4 @@
+//! [Log-structured merge tree](http://www.benstopford.com/2015/02/14/log-structured-merge-trees) implementation
 mod commit_log;
 mod sstable;
 
