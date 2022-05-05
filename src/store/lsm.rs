@@ -162,9 +162,7 @@ impl LSMStore {
         memtable_max_bytes: usize,
     ) -> Result<bool> {
         let data = shared_data.read().await;
-        return Ok(
-            data.memtable.len() > 0 && mem::size_of_val(&data.memtable) >= memtable_max_bytes
-        );
+        Ok(!data.memtable.is_empty() && mem::size_of_val(&data.memtable) >= memtable_max_bytes)
     }
 
     /// Returns a vector of SSTable paths, ordered from oldest to newest.
@@ -300,7 +298,7 @@ impl LSMStore {
         }
         let mut data = self.data.write().await;
         let tx_ids = &mut data.tx_ids;
-        tx_ids.push(transaction.id.clone());
+        tx_ids.push(transaction.id);
         for instruction in transaction.operations {
             match instruction {
                 Set(key, value) => {
@@ -345,7 +343,7 @@ impl Store for LSMStore {
         Ok(scan_result
             .iter()
             .filter_map(|(_, v)| match v.clone() {
-                Data(data) => Some(data.clone()),
+                Data(data) => Some(data),
                 Tombstone => None,
             })
             .collect())

@@ -55,7 +55,7 @@ pub trait Store {
 }
 
 /// A basic in memory store for testing
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct MemoryStore {
     data: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
 }

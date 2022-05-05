@@ -110,7 +110,7 @@ impl CommitLog {
 
     /// Writes an end_transaction line to the commit log.
     pub async fn end_transaction(&mut self, tx_id: &Uuid) -> Result<()> {
-        let line = EndTx(tx_id.clone());
+        let line = EndTx(*tx_id);
         let bytes = line.encode()?;
         let logfile = self.get_write_handle().await?;
         logfile.write_all(bytes.as_slice()).await?;
@@ -142,7 +142,7 @@ impl CommitLog {
                         break;
                     }
                 },
-                Err(e) => return Err(Error::from(e)),
+                Err(e) => return Err(e),
             }
             i += 1;
         }
