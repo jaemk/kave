@@ -1,6 +1,7 @@
 mod commit_log;
 mod sstable;
 
+use std::collections::BTreeMap;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,7 +9,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use growable_bloom_filter::GrowableBloom;
-use rb_tree::RBMap;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -36,7 +36,7 @@ pub struct LSMStore {
 }
 
 struct LSMData {
-    memtable: RBMap<String, Value>,
+    memtable: BTreeMap<String, Value>,
     tx_ids: Vec<Uuid>,
     bloom_filter: GrowableBloom,
 }
@@ -61,7 +61,7 @@ impl LSMStore {
         let commit_log = CommitLog::new(commit_log_path);
         Self {
             data: Arc::new(RwLock::new(LSMData {
-                memtable: RBMap::new(),
+                memtable: BTreeMap::new(),
                 tx_ids: Vec::new(),
                 // TODO what is the optimal number of items for the bloom filter?
                 bloom_filter: GrowableBloom::new(0.01, 512),
@@ -143,7 +143,7 @@ impl LSMStore {
     }
 
     /// Returns a vector of SSTable paths, ordered from newest to oldest.
-    async fn get_sstables(&self) -> Result<Vec<PathBuf>> {
+    async fn get_sstables(&self, desc: bool) -> Result<Vec<PathBuf>> {
         let mut sstables = Vec::new();
         let mut dir = fs::read_dir(&self.data_dir).await?;
         while let Some(file) = dir.next_entry().await? {
@@ -153,12 +153,16 @@ impl LSMStore {
                 };
             };
         }
-        sstables.sort_by(|a, b| b.cmp(a));
+        if desc {
+            sstables.sort_by(|a, b| b.cmp(a));
+        } else {
+            sstables.sort();
+        }
         Ok(sstables)
     }
 
     async fn search_sstables(&self, key: &str) -> Result<Option<Value>> {
-        for path in self.get_sstables().await? {
+        for path in self.get_sstables(true).await? {
             let sstable = SSTable::new(&path);
             let v = sstable.search(key.to_owned()).await?;
             if v.is_some() {
@@ -166,6 +170,21 @@ impl LSMStore {
             };
         }
         Ok(None)
+    }
+
+    async fn scan_sstables(
+        &self,
+        from_inclusive: &str,
+        to_exclusive: &str,
+    ) -> Result<Vec<(String, Value)>> {
+        let mut scan_kvs = BTreeMap::new();
+        for path in self.get_sstables(false).await? {
+            let sstable = SSTable::new(&path);
+            for (k, v) in sstable.scan(from_inclusive, to_exclusive).await? {
+                scan_kvs.insert(k, v);
+            }
+        }
+        Ok(scan_kvs.into_iter().collect())
     }
 
     /// Writes the current memtable to disk as an SStable then clears
@@ -179,7 +198,7 @@ impl LSMStore {
         let sstable = SSTable::new(path);
         let mut data = shared_data.write().await;
         sstable.write(&data.memtable).await?;
-        data.memtable = RBMap::new();
+        data.memtable = BTreeMap::new();
         let mut commit_log = commit_log.write().await;
         for tx_id in &data.tx_ids {
             commit_log.end_transaction(tx_id).await?;
@@ -260,6 +279,27 @@ impl Store for LSMStore {
         Ok(result)
     }
 
+    async fn scan(&mut self, from_inclusive: &str, to_exclusive: &str) -> Result<Vec<Vec<u8>>> {
+        let store = self.data.read().await;
+        let mut scan_result = BTreeMap::new();
+        for (k, v) in self.scan_sstables(from_inclusive, to_exclusive).await? {
+            scan_result.insert(k, v);
+        }
+        for (k, v) in store
+            .memtable
+            .range(from_inclusive.to_string()..to_exclusive.to_string())
+        {
+            scan_result.insert(k.to_owned(), v.to_owned());
+        }
+        Ok(scan_result
+            .iter()
+            .filter_map(|(_, v)| match v.clone() {
+                Data(data) => Some(data.clone()),
+                Tombstone => None,
+            })
+            .collect())
+    }
+
     async fn transact(&mut self, transaction: Transaction) -> Result<()> {
         self.do_transact(transaction, true).await
     }
@@ -334,7 +374,7 @@ mod tests {
             };
         }
         assert_eq!(1, sst_file_count);
-        assert_eq!(sst_file_count, store.get_sstables().await?.len());
+        assert_eq!(sst_file_count, store.get_sstables(true).await?.len());
         Ok(())
     }
 
@@ -354,6 +394,56 @@ mod tests {
         assert_eq!(
             b"bar".to_vec(),
             store.get("foo").await?.expect("Could not find key")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_scan() -> Result<()> {
+        let data_dir = self::test_data_dir().await?;
+        let mut store = self::setup_db(data_dir.as_path(), 1);
+        store
+            .transact(Transaction::with_random_id(vec![
+                Operation::set("a", b"first"),
+                Operation::set("b", b"second"),
+                Operation::set("c", b"third"),
+                Operation::set("d", b"fourth"),
+                Operation::set("e", b"fifth"),
+            ]))
+            .await?;
+        assert_eq!(
+            vec![b"second".to_vec(), b"third".to_vec(), b"fourth".to_vec()],
+            store.scan("b", "dd").await?
+        );
+        let empty: Vec<Vec<u8>> = vec![];
+        assert_eq!(empty, store.scan("ee", "f").await?);
+        assert_eq!(
+            vec![b"fourth".to_vec(), b"fifth".to_vec()],
+            store.scan("cc", "z").await?
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(
+            vec![b"second".to_vec(), b"third".to_vec(), b"fourth".to_vec()],
+            store.scan("b", "dd").await?
+        );
+        store
+            .transact(Transaction::with_random_id(vec![
+                Operation::set("0", b"zeroth"),
+                Operation::set("f", b"sixth"),
+            ]))
+            .await?;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(
+            vec![
+                b"zeroth".to_vec(),
+                b"first".to_vec(),
+                b"second".to_vec(),
+                b"third".to_vec(),
+                b"fourth".to_vec(),
+                b"fifth".to_vec(),
+                b"sixth".to_vec()
+            ],
+            store.scan("0", "z").await?
         );
         Ok(())
     }
