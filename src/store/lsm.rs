@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use growable_bloom_filter::GrowableBloom;
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -193,6 +194,7 @@ impl LSMStore {
             .iter()
             .filter(|(_, bloom)| bloom.contains(&key))
             .map(|(path, _)| path.clone())
+            .sorted_by(|a, b| b.cmp(a))
             .collect()
     }
 
