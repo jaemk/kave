@@ -79,7 +79,7 @@ fn setup() -> Result<()> {
     // figure out log level and format
     let log_level = matches
         .value_of("log_level")
-        .unwrap_or_else(|| config.log_level.as_str());
+        .unwrap_or(config.log_level.as_str());
     let log_format = match matches.value_of("log_format") {
         Some(f) => f.parse::<LogFormat>()?,
         None => config.log_format,

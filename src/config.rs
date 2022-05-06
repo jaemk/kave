@@ -8,7 +8,7 @@ fn get_env(k: &str) -> Option<String> {
 }
 
 fn env_or(k: &str, default: &str) -> String {
-    get_env(k).unwrap_or(default.to_string())
+    get_env(k).unwrap_or_else(|| default.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

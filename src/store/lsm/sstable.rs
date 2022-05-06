@@ -85,4 +85,12 @@ impl SSTable {
             .map(|(k, v)| (k.to_owned(), v.to_owned()))
             .collect_vec())
     }
+
+    pub async fn keys(&self) -> Result<Vec<String>> {
+        let mut file = self.file_handle().await?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).await?;
+        let memtable: BTreeMap<String, Value> = bincode::deserialize(buf.as_slice())?;
+        Ok(memtable.keys().map(|k| k.to_string()).collect())
+    }
 }
