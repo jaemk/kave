@@ -97,7 +97,7 @@ impl LSMStore {
         if let Some(bloom) = bloom_map {
             self.bloom_map = Arc::new(RwLock::new(bloom));
         } else {
-            let bloom_map = self.index_sstables().await?;
+            let bloom_map = self.reconstruct_bloom_map().await?;
             self.bloom_map = Arc::new(RwLock::new(bloom_map));
         }
         self.restore_previous_txs().await?;
@@ -105,7 +105,8 @@ impl LSMStore {
         Ok(())
     }
 
-    async fn index_sstables(&self) -> Result<HashMap<PathBuf, GrowableBloom>> {
+    /// Reconstructs the bloom filter map by iterating over all SSTable keys.
+    async fn reconstruct_bloom_map(&self) -> Result<HashMap<PathBuf, GrowableBloom>> {
         let mut bloom_map = HashMap::new();
         for path in self.get_sstables_asc().await? {
             let sstable = SSTable::new(path.as_path());
@@ -250,7 +251,7 @@ impl LSMStore {
         Ok(())
     }
 
-    /// Write the bloom filter to disk for later recovery
+    /// Write the bloom filter to disk for later recovery.
     async fn write_bloom_map(
         bloom_map: Shared<HashMap<PathBuf, GrowableBloom>>,
         bloom_path: &Path,
@@ -271,8 +272,8 @@ impl LSMStore {
         Ok(())
     }
 
-    /// Restore the bloom filter from disk if it is up-to-date with
-    /// the commit log
+    /// Restore the bloom filter map from disk if it is up-to-date
+    /// with the commit log.
     async fn restore_bloom_map(&mut self) -> Result<Option<HashMap<PathBuf, GrowableBloom>>> {
         let path = &self.bloom_map_path;
         if !path.exists() {
