@@ -152,3 +152,58 @@ fn u64_to_usize(input: u64) -> usize {
     // better at some point
     usize::try_from(input).expect("32 bit architecture not supported")
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{env, path::PathBuf};
+
+    use crate::{store::lsm::Value, Result};
+    use maplit::btreemap;
+    use uuid::Uuid;
+
+    use super::SSTable;
+
+    fn test_data_file() -> PathBuf {
+        env::temp_dir().join(format!("{}.sst", Uuid::new_v4().to_string()))
+    }
+
+    #[tokio::test]
+    async fn test_read_write() -> Result<()> {
+        let path = self::test_data_file();
+        let sstable = SSTable::new(path);
+        let memtable = btreemap! {
+            "bar".to_string() => Value::Data(b"qux".to_vec()),
+            "foo".to_string() => Value::Data(b"bar".to_vec()),
+            "qux".to_string() => Value::Data(b"boom".to_vec()),
+            "zip".to_string() => Value::Tombstone,
+        };
+        sstable.write(&memtable).await?;
+        assert_eq!(
+            Some(Value::Data(b"qux".to_vec())),
+            sstable.search("bar".to_string()).await?
+        );
+        assert_eq!(
+            Some(Value::Tombstone),
+            sstable.search("zip".to_string()).await?
+        );
+        assert_eq!(None, sstable.search("missing".to_string()).await?);
+        assert_eq!(
+            vec![
+                ("bar".to_string(), Value::Data(b"qux".to_vec())),
+                ("foo".to_string(), Value::Data(b"bar".to_vec())),
+                ("qux".to_string(), Value::Data(b"boom".to_vec()))
+            ],
+            sstable.scan("bar", "quxx").await?
+        );
+        assert_eq!(
+            vec![
+                "bar".to_string(),
+                "foo".to_string(),
+                "qux".to_string(),
+                "zip".to_string()
+            ],
+            sstable.keys().await?
+        );
+        Ok(())
+    }
+}

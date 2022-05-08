@@ -48,7 +48,7 @@ struct LSMData {
     tx_ids: Vec<Uuid>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     Data(Vec<u8>),
     Tombstone,
