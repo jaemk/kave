@@ -103,9 +103,14 @@ impl LSMStore {
     async fn restore_bloom_map(&mut self) -> Result<()> {
         let bloom_map = self.restore_bloom_map_from_file().await?;
         if let Some(bloom) = bloom_map {
+            tracing::debug!(
+                path = ?self.bloom_map_path.as_path(),
+                "Restored bloom map from file"
+            );
             self.bloom_map = Arc::new(RwLock::new(bloom));
         } else {
             let bloom_map = self.reconstruct_bloom_map_from_sstables().await?;
+            tracing::debug!("Reconstructed bloom map from SSTables");
             self.bloom_map = Arc::new(RwLock::new(bloom_map));
         }
         Ok(())
@@ -127,10 +132,12 @@ impl LSMStore {
     }
 
     async fn restore_previous_txs(&mut self) -> Result<()> {
+        tracing::debug!("Looking for unfinished transactions...");
         let commit_log_ref = self.commit_log.clone();
         let commit_log = commit_log_ref.read().await;
         for tx in commit_log.get_unfinished_transactions().await? {
-            self.do_transact(tx, false).await?
+            tracing::debug!(tx_id = ?tx.id, "Restoring transaction");
+            self.do_transact(tx, false).await?;
         }
         Ok(())
     }
@@ -149,6 +156,7 @@ impl LSMStore {
                     .await
                     .expect("Failed to size memtable")
                 {
+                    tracing::debug!("Flushing memtable to disk...");
                     Self::write_sstable(
                         data.clone(),
                         data_dir.clone().as_path(),
@@ -157,6 +165,7 @@ impl LSMStore {
                     )
                     .await
                     .expect("Failed to flush memtable");
+                    tracing::debug!("Flushed memtable");
                 };
             }
         });
@@ -240,6 +249,10 @@ impl LSMStore {
         let path = data_dir.join(format!("{}.sst", utils::time_since_epoch().as_millis()));
         let sstable = SSTable::new(path.clone());
         sstable.write(&data.memtable).await?;
+        tracing::debug!(
+            path = ?path.as_path(),
+            "Wrote SSTable file"
+        );
         bloom_map.insert(
             path.clone(),
             GrowableBloom::new(BLOOM_ERROR_PROB, BLOOM_EST_INSERTIONS),
@@ -276,6 +289,7 @@ impl LSMStore {
             .await?;
         file.write_all(buf.as_slice()).await?;
         file.sync_all().await?;
+        tracing::debug!(path = ?bloom_path, "Wrote bloom map file");
         Ok(())
     }
 
