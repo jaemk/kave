@@ -164,7 +164,7 @@ mod tests {
     use super::SSTable;
 
     fn test_data_file() -> PathBuf {
-        env::temp_dir().join(format!("{}.sst", Uuid::new_v4().to_string()))
+        env::temp_dir().join(format!("{}.sst", Uuid::new_v4()))
     }
 
     #[tokio::test]
@@ -203,6 +203,24 @@ mod tests {
                 "zip".to_string()
             ],
             sstable.keys().await?
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_already_exists_error() -> Result<()> {
+        let path = self::test_data_file();
+        let sstable_one = SSTable::new(path.clone());
+        let memtable = btreemap! {
+            "foo".to_string() => Value::Data(b"bar".to_vec())
+        };
+        sstable_one.write(&memtable).await?;
+        let sstable_two = SSTable::new(path.clone());
+        let res = sstable_two.write(&memtable).await;
+        assert!(res.is_err());
+        assert_eq!(
+            format!("File {} already exists", path.to_str().unwrap()),
+            res.err().unwrap().to_string()
         );
         Ok(())
     }
