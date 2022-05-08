@@ -21,3 +21,16 @@ macro_rules! init {
         sub.try_init().ok();
     }};
 }
+
+/// read from $reader into a buf until at least $min_bytes exist
+#[macro_export]
+macro_rules! read_buf {
+    ($reader:expr, $min_bytes:expr) => {{
+        use tokio::io::AsyncReadExt;
+        let mut buf = vec![];
+        while buf.len() < $min_bytes {
+            $reader.read_buf(&mut buf).await.expect("error reading");
+        }
+        buf
+    }};
+}

@@ -1,6 +1,6 @@
 use kave::server::{load_certs, load_keys, ClientServer};
 use kave::store::MemoryStore;
-use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{split, AsyncWriteExt};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 #[macro_use]
@@ -54,16 +54,12 @@ async fn test_client_server_basic() {
     let (mut reader, mut writer) = split(stream);
 
     writer
-        .write_all(b"working!!!")
+        .write_all(b"ECHO:10:working!!!\n")
         .await
         .expect("error writing");
 
-    // give it a sec to process
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-    let mut buf = vec![];
-    reader.read_buf(&mut buf).await.expect("error reading");
-    assert_eq!(buf, b"working!!!");
+    let buf = read_buf!(reader, 10);
+    assert_eq!(std::str::from_utf8(&buf).unwrap(), "10:working!!!\n");
 
     // send shutdown and assert that it actually shuts down
     shutdown_send
@@ -86,31 +82,30 @@ async fn test_client_server_get_set() {
 
     // get non existing key
     writer
-        .write_all(b"GET:5:abcdef")
+        .write_all(b"GET:5:abcdef\n")
         .await
         .expect("error writing");
-    let mut buf = vec![];
-    reader.read_buf(&mut buf).await.expect("error reading");
-    assert_eq!(buf, b"4:null\n");
+    let buf = read_buf!(reader, 4);
+    assert_eq!(std::str::from_utf8(&buf).unwrap(), "null\n");
 
     // set missing key
     writer
-        .write_all(b"SET:5:abcde:30:012345678901234567890123456789-this-should-be-ignored")
+        .write_all(b"SET:5:abcde:30:012345678901234567890123456789-a-this-should-be-ignored\n")
         .await
         .expect("error writing");
-    let mut buf = vec![];
-    reader.read_buf(&mut buf).await.expect("error reading");
-    assert_eq!(buf, b"2:ok:2:30\n");
+    let buf = read_buf!(reader, 4);
+    assert_eq!(std::str::from_utf8(&buf).unwrap(), "2:30\n");
 
     // get previously set key
     writer
-        .write_all(b"GET:5:abcde-this-should-be-ignored")
+        .write_all(b"GET:5:abcde-b-this-should-be-ignored\n")
         .await
         .expect("error writing");
-    let mut buf = vec![];
-    reader.read_buf(&mut buf).await.expect("error reading");
-    // assert_eq!(std::str::from_utf8(&buf).unwrap(), "");
-    assert_eq!(buf, b"30:012345678901234567890123456789\n");
+    let buf = read_buf!(reader, 30 + 4);
+    assert_eq!(
+        std::str::from_utf8(&buf).unwrap(),
+        "30:012345678901234567890123456789\n"
+    );
 
     // send shutdown and assert that it actually shuts down
     shutdown_send
