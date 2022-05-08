@@ -48,7 +48,7 @@ struct LSMData {
     tx_ids: Vec<Uuid>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     Data(Vec<u8>),
     Tombstone,
@@ -482,6 +482,8 @@ mod tests {
             b"bar".to_vec(),
             store.get("foo").await?.expect("Could not find key")
         );
+        let reconstructed_bloom = store.reconstruct_bloom_map_from_sstables().await?;
+        assert_eq!(1, reconstructed_bloom.len());
         Ok(())
     }
 
