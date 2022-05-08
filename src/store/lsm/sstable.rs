@@ -71,7 +71,7 @@ impl SSTable {
         for (key, val) in memtable.iter() {
             let size = bincode::serialized_size(val)?;
             index.insert(key.clone(), IndexEntry { offset, size });
-            offset += size + 1;
+            offset += size;
         }
         let index_size = bincode::serialized_size(&index)?;
         for (_, val) in index.iter_mut() {
