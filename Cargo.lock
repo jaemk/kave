@@ -397,6 +397,7 @@ dependencies = [
  "async-trait",
  "base64",
  "bincode",
+ "bytes",
  "cached",
  "chrono",
  "clap",
