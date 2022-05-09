@@ -2,6 +2,7 @@ pub mod client;
 pub mod config;
 pub mod crypto;
 pub mod error;
+pub mod proto;
 pub mod server;
 pub mod store;
 pub mod utils;

@@ -1,6 +1,6 @@
 use kave::server::{load_certs, load_keys, Server};
 use kave::store::MemoryStore;
-use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{split, AsyncWriteExt};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 #[macro_use]
@@ -63,11 +63,8 @@ async fn test_cluster_server_basic_with_client_server() {
         .write_all(b"working!!!")
         .await
         .expect("error writing");
-    // give it a sec to process
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    let mut buf = vec![];
-    reader.read_buf(&mut buf).await.expect("error reading");
-    assert_eq!(buf, b"working!!!");
+    let buf = read_buf!(reader, 10);
+    assert_eq!(std::str::from_utf8(&buf).unwrap(), "working!!!");
     // --------------------------------------------------
 
     // talk to client server
@@ -77,14 +74,11 @@ async fn test_cluster_server_basic_with_client_server() {
         .expect("error connecting to test addr");
     let (mut reader, mut writer) = split(stream);
     writer
-        .write_all(b"working!!!")
+        .write_all(b"ECHO:10:working!!!\n")
         .await
         .expect("error writing");
-    // give it a sec to process
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    let mut buf = vec![];
-    reader.read_buf(&mut buf).await.expect("error reading");
-    assert_eq!(buf, b"working!!!");
+    let buf = read_buf!(reader, 10);
+    assert_eq!(std::str::from_utf8(&buf).unwrap(), "10:working!!!\n");
     // --------------------------------------------------
 
     // send shutdown and assert that it actually shuts down
@@ -111,10 +105,7 @@ async fn test_cluster_server_basic_without_client_server() {
         .write_all(b"working!!!")
         .await
         .expect("error writing");
-    // give it a sec to process
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    let mut buf = vec![];
-    reader.read_buf(&mut buf).await.expect("error reading");
+    let buf = read_buf!(reader, 10);
     assert_eq!(buf, b"working!!!");
     // --------------------------------------------------
 
