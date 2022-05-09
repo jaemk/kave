@@ -141,7 +141,6 @@ impl<S: Store + Clone + Send + Sync + 'static> Server<S> {
             tokio::select! {
                 _ = self.sig_shutdown_recv.recv() => {
                     tracing::info!("server received sigint shutdown signal");
-                    self.store.shutdown().await?;
                     if self.start_client_server {
                     sig_client_shutdown_send.send(true).expect("error propagating shutdown signal to client-server");
                     }

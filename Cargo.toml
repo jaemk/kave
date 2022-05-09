@@ -70,6 +70,9 @@ itertools = "0.10.3"
 bytes = "1.1.0"
 # https://docs.rs/trust-dns-resolver/latest/trust_dns_resolver/
 trust-dns-resolver = "0.21"
+# utilities for futures
+# https://rust-lang.github.io/futures-rs
+futures = "0.3.21"
 
 [dev-dependencies]
 # map literal macros

@@ -22,22 +22,31 @@ async fn run() -> Result<()> {
     tracing::info!("initializing");
     let (svr_shutdown_send, mut svr_shutdown_recv) = tokio::sync::mpsc::unbounded_channel();
     let (sig_shutdown_send, sig_shutdown_recv) = tokio::sync::mpsc::unbounded_channel();
+    let (store_shutdown_tx, store_shutdown_rx) = tokio::sync::mpsc::unbounded_channel();
 
-    let store = kave::store::lsm::LSMStore::initialize_from_config(&config).await?;
+    let store =
+        kave::store::lsm::LSMStore::initialize_from_config(&config, store_shutdown_rx).await?;
     let svr = Server::new(svr_shutdown_send, sig_shutdown_recv, certs, keys, store);
     tokio::spawn(async move { svr.start().await });
     tracing::info!("server spawned");
+
+    let mut shutdown_confirmations = Vec::new();
 
     let server_initiated_shutdown = tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("handling sigint");
             sig_shutdown_send.send(true).expect("error sending sigint shutdown signal");
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            shutdown_confirmations.push(rx);
+            store_shutdown_tx.send(tx).expect("Error sending shutdown signal");
             false
         },
         _ = svr_shutdown_recv.recv() => {
             true
         },
     };
+
+    futures::future::join_all(shutdown_confirmations).await;
 
     if !server_initiated_shutdown {
         tracing::info!("shutdown initiated, waiting for server shutdown signal");
