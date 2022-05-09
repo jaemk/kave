@@ -563,6 +563,18 @@ mod tests {
                 Operation::set("f", b"sixth"),
             ]))
             .await?;
+        assert_eq!(
+            vec![
+                b"zeroth".to_vec(),
+                b"first".to_vec(),
+                b"second".to_vec(),
+                b"third".to_vec(),
+                b"fourth".to_vec(),
+                b"fifth".to_vec(),
+                b"sixth".to_vec()
+            ],
+            store.scan("0", "z").await?
+        );
         let event = timeout(Duration::from_secs(2), events.recv())
             .await?
             .expect("Error receiving event from LSM store");
