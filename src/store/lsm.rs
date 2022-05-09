@@ -14,7 +14,7 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
 use self::commit_log::CommitLog;
@@ -41,11 +41,18 @@ pub struct LSMStore {
     memtable_max_bytes: usize,
     bloom_map: Shared<HashMap<PathBuf, GrowableBloom>>,
     bloom_map_path: PathBuf,
+    event_sender: broadcast::Sender<LSMEvent>,
 }
 
 struct LSMData {
     memtable: BTreeMap<String, Value>,
     tx_ids: Vec<Uuid>,
+}
+
+/// Events published on the events channel exposed by the store
+#[derive(Clone, Debug)]
+pub enum LSMEvent {
+    WriteSSTable(PathBuf),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -66,6 +73,7 @@ impl Value {
 impl LSMStore {
     fn new(data_dir: &Path, commit_log_path: &Path, memtable_max_bytes: usize) -> Self {
         let commit_log = CommitLog::new(commit_log_path);
+        let (event_tx, _) = broadcast::channel(8);
         Self {
             data: Arc::new(RwLock::new(LSMData {
                 memtable: BTreeMap::new(),
@@ -76,6 +84,7 @@ impl LSMStore {
             memtable_max_bytes,
             bloom_map: Arc::new(RwLock::new(HashMap::new())),
             bloom_map_path: data_dir.join("bloom_map"),
+            event_sender: event_tx,
         }
     }
 
@@ -85,6 +94,10 @@ impl LSMStore {
             config.commit_log_path.as_path(),
             config.memtable_max_mb * 1_000_000,
         )
+    }
+
+    pub fn events(&mut self) -> broadcast::Receiver<LSMEvent> {
+        self.event_sender.subscribe()
     }
 
     pub async fn initialize_from_config(config: &Config) -> Result<Self> {
@@ -148,6 +161,7 @@ impl LSMStore {
         let bloom_map = self.bloom_map.clone();
         let commit_log = self.commit_log.clone();
         let memtable_max_bytes = self.memtable_max_bytes;
+        let event_sender = self.event_sender.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             loop {
@@ -157,15 +171,20 @@ impl LSMStore {
                     .expect("Failed to size memtable")
                 {
                     tracing::debug!("Flushing memtable to disk...");
-                    Self::write_sstable(
+                    if let Some(path) = Self::write_sstable(
                         data.clone(),
                         data_dir.clone().as_path(),
                         bloom_map.clone(),
                         commit_log.clone(),
                     )
                     .await
-                    .expect("Failed to flush memtable");
-                    tracing::debug!("Flushed memtable");
+                    .expect("Failed to flush memtable")
+                    {
+                        event_sender
+                            .send(LSMEvent::WriteSSTable(path))
+                            .expect("Failed to send memtable flush event");
+                        tracing::debug!("Flushed memtable");
+                    }
                 };
             }
         });
@@ -240,10 +259,10 @@ impl LSMStore {
         data_dir: &Path,
         bloom_map: Shared<HashMap<PathBuf, GrowableBloom>>,
         commit_log: Shared<CommitLog>,
-    ) -> Result<()> {
+    ) -> Result<Option<PathBuf>> {
         let mut data = shared_data.write().await;
         if data.memtable.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let mut bloom_map = bloom_map.write().await;
         let path = data_dir.join(format!("{}.sst", utils::time_since_epoch().as_millis()));
@@ -268,7 +287,7 @@ impl LSMStore {
             commit_log.end_transaction(tx_id).await?;
         }
         data.tx_ids = Vec::new();
-        Ok(())
+        Ok(Some(path))
     }
 
     /// Write the bloom filter to disk for later recovery.
@@ -401,7 +420,8 @@ mod tests {
         time::Duration,
     };
 
-    use tokio::fs::DirBuilder;
+    use assert_matches::assert_matches;
+    use tokio::{fs::DirBuilder, time::timeout};
     use uuid::Uuid;
 
     use crate::{
@@ -409,7 +429,7 @@ mod tests {
         Result,
     };
 
-    use super::LSMStore;
+    use super::{LSMEvent, LSMStore};
 
     async fn test_data_dir() -> Result<PathBuf> {
         let data_dir = env::temp_dir().join(Uuid::new_v4().to_string());
@@ -430,6 +450,7 @@ mod tests {
         let data_dir = self::test_data_dir().await?;
         let mut store = self::setup_db(data_dir.as_path(), 1);
         store.initialize().await?;
+        let mut events = store.events();
         store
             .transact(Transaction::with_random_id(vec![Operation::set(
                 "foo", b"foobar",
@@ -439,22 +460,24 @@ mod tests {
             b"foobar".to_vec(),
             store.get("foo").await?.expect("Could not find key")
         );
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        let LSMEvent::WriteSSTable(sstable_path) = timeout(Duration::from_secs(2), events.recv())
+            .await?
+            .expect("Error receiving event from LSM store");
         assert_eq!(
             b"foobar".to_vec(),
             store.get("foo").await?.expect("Could not find key")
         );
-        let mut sst_file_count = 0;
         let mut dir = tokio::fs::read_dir(store.data_dir.as_path()).await?;
+        let mut sst_files = Vec::new();
         while let Some(entry) = dir.next_entry().await? {
             if let Some(ext) = entry.path().extension() {
                 if ext == "sst" {
-                    sst_file_count += 1
+                    sst_files.push(entry.path());
                 };
             };
         }
-        assert_eq!(1, sst_file_count);
-        assert_eq!(sst_file_count, store.get_sstables_asc().await?.len());
+        assert_eq!(vec![sstable_path], sst_files);
+        assert_eq!(sst_files, store.get_sstables_asc().await?);
         Ok(())
     }
 
@@ -505,6 +528,8 @@ mod tests {
     async fn test_scan() -> Result<()> {
         let data_dir = self::test_data_dir().await?;
         let mut store = self::setup_db(data_dir.as_path(), 1);
+        store.initialize().await?;
+        let mut events = store.events();
         store
             .transact(Transaction::with_random_id(vec![
                 Operation::set("a", b"first"),
@@ -524,7 +549,10 @@ mod tests {
             vec![b"fourth".to_vec(), b"fifth".to_vec()],
             store.scan("cc", "z").await?
         );
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        let event = timeout(Duration::from_secs(2), events.recv())
+            .await?
+            .expect("Error receiving event from LSM store");
+        assert_matches!(event, LSMEvent::WriteSSTable(_));
         assert_eq!(
             vec![b"second".to_vec(), b"third".to_vec(), b"fourth".to_vec()],
             store.scan("b", "dd").await?
@@ -535,7 +563,10 @@ mod tests {
                 Operation::set("f", b"sixth"),
             ]))
             .await?;
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        let event = timeout(Duration::from_secs(2), events.recv())
+            .await?
+            .expect("Error receiving event from LSM store");
+        assert_matches!(event, LSMEvent::WriteSSTable(_));
         assert_eq!(
             vec![
                 b"zeroth".to_vec(),
