@@ -70,14 +70,25 @@ enum State {
 }
 
 const MIN_BUF_SIZE: usize = 4;
-const BUF_SIZE: usize = 7;
+const BUF_SIZE: usize = 256;
 
+/// A basic wire protocol reader/writer.
+/// See `read` method below for more details.
 pub struct Proto {
+    // The connection/session ID this proto is being used for
     id: String,
+    // The peer/client's address
     addr: std::net::SocketAddr,
+    // The read-half of the client's connection
     reader: ReadHalf<TlsStream<TcpStream>>,
+    // Internal buffer used to read into
     buf: Vec<u8>,
+    // Flag denoting whether this proto is newly constructed
+    // or whether is has been used to read before. This is
+    // used to signal whether we want to preserve the existing
+    // contents of `self.buf`
     fresh: bool,
+    // Broadcast receiver to signal shutdown
     kill: Receiver<bool>,
 }
 impl Proto {
@@ -161,7 +172,7 @@ impl Proto {
         tracing::trace!(session = %self.id, "reading to buffer");
         tokio::select! {
             _ = self.kill.recv() => {
-                tracing::info!(session = %self.id, "connection cancelled");
+                tracing::info!(session = %self.id, "connection cancelled by server shutdown");
                 Ok(ProtoRead::Cancelled)
             }
             res = self.reader.read_buf(&mut self.buf) => {
@@ -180,23 +191,93 @@ impl Proto {
         }
     }
 
+    /// Read from `self.reader` (into `self.buf`) to construct a single valid `ProtoOp`
+    /// TODO: Add max limits to number of bytes read for lengths/keys/values
+    /// TODO: Better handling of client errors - malformed or malicious inputs
+    ///
+    /// This is a really basic wire protocol to communicate utf8 keys and raw byte values.
+    /// There are 3 commands:
+    ///   GET key       => GET:3:key\n           => 9:the_value\n   ;; returning the found bytes
+    ///   SET key value => SET:3:key:5:value\n   => 1:5\n           ;; returning the number of bytes saved
+    ///   ECHO msg      => ECHO:7:message\n      => 7:message\n     ;; returning the bytes sent
+    ///
+    /// - `key`, `value`, `msg` denote variable length byte arguments
+    /// - `key` bytes must be a valid utf8 string
+    /// - Every variable length byte argument is prefixed by a "length" surrounded by colons `:`
+    ///   which denotes how many bytes must be read to consume the following argument.
+    /// - Every command must end with a newline `\n`. These act as a secondary separator,
+    ///   with the "lengths" being the primary means of separation. Any bytes found between
+    ///   the "end" of a "length" and the trailing newline are discarded.
+    /// - Every result has a trailing newline to denote the end of the result message.
+    /// - Lack of existence is represented by `null\n`
+    ///
+    /// Examples:
+    /// - Get non existent key:
+    ///     send=> GET:9:unset_key\n
+    ///     recv=> null\n
+    ///
+    /// - Get an existing key:
+    ///     send=> GET:7:set_key\n
+    ///     recv=> 11:found_value\n
+    ///
+    /// - Set a key/value pair:
+    ///     send=> SET:6:my_key:8:my_value\n
+    ///     recv=> 1:8\n
+    ///
+    /// - Echo a message:
+    ///     send=> ECHO:11:hello world\n
+    ///     recv=> 11:hello world\n
+    ///
     pub async fn read(&mut self) -> Result<ProtoOp> {
+        // --------
+        // --- Starting defaults
+        // --------
         let mut state = State::Start;
         let mut op = Op::Get;
+        // Flag used when reading length integers
         let mut between_colons = false;
+        // Whether a "read from socket" is required. This will clear
+        // and refill the internal `self.buf`.
+        // When a `fresh` Proto is being used, we want to start
+        // off reading from the socket, but when a `!fresh` Proto
+        // is being re-used for subsequent reads of `ProtoOp`s, then
+        // we _don't_ want to start with a read since we want to
+        // preserve whatever may be in the existing `self.buf`
+        let mut needs_read = self.fresh;
+        // Pointer to the internal `self.buf` buffer
+        let mut ptr = 0;
+
+        // --------
+        // --- Buffers for reading distinct parts of the proto-op
+        // --------
+        // Buf to read the key length integer, 8 chars should cover most numbers
         let mut key_len_buf = Vec::with_capacity(8);
+        // Eventual parsed length in bytes of the key
         let mut key_len = 0;
-        let mut key = Vec::with_capacity(256);
+        let mut key = Vec::with_capacity(BUF_SIZE);
+
+        // Buf to read message to be echo'd
         let mut echo = Vec::with_capacity(BUF_SIZE);
+
+        // Buf to read the key length integer, 8 chars should cover most numbers
         let mut value_len_buf = Vec::with_capacity(8);
+        // Eventual parsed length in bytes of the value
         let mut value_len = 0;
         let mut value = Vec::with_capacity(BUF_SIZE);
 
-        let mut needs_read = self.fresh;
-        let mut ptr = 0;
+        // Buf to hold residual bytes - these are bytes found
+        // in `self.buf` after an "end of message" newline.
+        // Any residual bytes will be prepended to `self.buf`
+        // after the next read.
         let mut residual = Vec::with_capacity(BUF_SIZE);
+
         'state_loop: loop {
             if needs_read {
+                // Before reading, empty the read buffer and make sure
+                // it's sized to the expected BUF_SIZE.
+                // Clearing ensures there's space to fill, and shrinking
+                // ensures that the buffer hasn't grown due to previously
+                // prepended residual bytes.
                 self.buf.clear();
                 self.buf.shrink_to(BUF_SIZE);
 
@@ -222,10 +303,13 @@ impl Proto {
                 State::Start => {
                     tracing::debug!(session = %self.id, fresh= %self.fresh, "handling State::Start");
                     if self.fresh {
+                        // this is a new proto, just continue to reading
                         state = State::ReadOp;
                         self.fresh = false;
                     } else {
-                        // clear anything remaining on the stream up to and including a newline
+                        // This is an existing proto so there may be residual data in `self.buf`.
+                        // Clear anything remaining on the stream up to and including a b'\n'.
+                        // If there's anything after that newline, then save it to the residual buffer.
                         while ptr < self.buf.len() {
                             tracing::trace!(session = %self.id, ptr=%ptr, "clearing residual bytes up to newline");
                             if self.buf[ptr] == b'\n' {
@@ -249,8 +333,13 @@ impl Proto {
                     let read_op_end_ptr = ptr + MIN_BUF_SIZE;
                     if read_op_end_ptr > self.buf.len() {
                         if ptr == 0 {
-                            // we're at the start of a read buffer and there's not enough bytes
-                            // so there must have been a malformed write from a client
+                            // We're at the start of a read buffer and there's not enough bytes
+                            // so there must have been a malformed write from a client.
+                            // Note: This assumption isn't _really_ valid. It's _possible_
+                            //       that the client is slowly writing the initial "op" (GET/SET)
+                            //       bytes, and it might be better if we kept reading and
+                            //       prepending our current byes using the residual buffer.
+                            //       We can add that if we see this error happening...
                             return Err(format!(
                                 "error reading start of operation, buffer-len {:?} shorter than expected {:?}",
                                 self.buf.len(),
