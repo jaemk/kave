@@ -1,5 +1,6 @@
 use crate::error::Result;
 use crate::get_config;
+use crate::proto;
 use crate::store::{Operation, Store, Transaction};
 use std::fs::File;
 use std::io::BufReader;
@@ -7,6 +8,8 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::broadcast;
+use tokio::sync::broadcast::Receiver;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_rustls::rustls::{self, Certificate, PrivateKey};
 use tokio_rustls::TlsAcceptor;
@@ -35,31 +38,13 @@ macro_rules! uuid_with_ident {
     };
 }
 
-macro_rules! write_stream {
-    ($id:expr, $writer:expr, $buf:expr, $addr:expr) => {
-        $writer
-            .write_all($buf)
-            .await
-            .map_err(|e| format!("session={id} error writing to socket: {e}", id = $id))?;
-        $writer
-            .flush()
-            .await
-            .map_err(|e| format!("session={id} error flusing stream: {e}", id = $id))?;
-        tracing::debug!(
-            session = %$id,
-            "flushed {n} bytes to {peer_addr:?}",
-            n = $buf.len(),
-            peer_addr = $addr
-        );
-    };
-}
-
 pub struct Connection<S> {
     id: String,
     stream: tokio::net::TcpStream,
     addr: std::net::SocketAddr,
     acceptor: TlsAcceptor,
     store: S,
+    kill: Receiver<bool>,
 }
 impl<S: Store + Send + Sync + Clone + 'static> Connection<S> {
     pub fn new(
@@ -68,6 +53,7 @@ impl<S: Store + Send + Sync + Clone + 'static> Connection<S> {
         addr: std::net::SocketAddr,
         acceptor: TlsAcceptor,
         store: S,
+        kill: Receiver<bool>,
     ) -> Self {
         Self {
             id,
@@ -75,6 +61,7 @@ impl<S: Store + Send + Sync + Clone + 'static> Connection<S> {
             addr,
             acceptor,
             store,
+            kill,
         }
     }
 
@@ -86,169 +73,52 @@ impl<S: Store + Send + Sync + Clone + 'static> Connection<S> {
             .await
             .map_err(|e| format!("session={id} error accepting stream: {e}"))?;
 
-        let (mut reader, mut writer) = split(stream);
-        let mut buf = Vec::with_capacity(1024);
-        'read: loop {
-            buf.clear();
-            let n = match reader.read_buf(&mut buf).await {
-                Ok(n) => n,
-                Err(e) => {
-                    use std::io::ErrorKind::*;
-                    match e.kind() {
-                        UnexpectedEof => {
-                            tracing::debug!(session = %id, "EOF on socket, disconnecting");
-                            break 'read;
-                        }
-                        _ => {
-                            return Err(
-                                format!("session={id} error reading from socket: {e}").into()
-                            )
-                        }
+        let (reader, mut writer) = split(stream);
+        let mut proto = proto::Proto::new(&id, self.addr, reader, self.kill);
+        loop {
+            // tokio::select! {
+            //     _ = self.kill.recv() => {
+            //         tracing::info!(session = %id, "connection cancelled");
+            //         return Ok(());
+            //     }
+            //     op = proto.read() => {
+            let op = proto.read().await;
+            match op? {
+                proto::ProtoOp::SysClose => {
+                    tracing::debug!(session = %id, "EOF on socket, disconnecting");
+                    return Ok(());
+                }
+                proto::ProtoOp::Cancelled => {
+                    tracing::debug!(session = %id, "connection cancelled, disconnecting");
+                    return Ok(());
+                }
+                proto::ProtoOp::Echo { msg } => {
+                    proto.write_echo(&mut writer, &msg).await?;
+                    proto.flush(&mut writer).await?;
+                }
+                proto::ProtoOp::Get { key } => {
+                    let val = self.store.get(&key).await.unwrap();
+                    if let Some(val) = val {
+                        proto.write_get_result(&mut writer, &val).await?;
+                        proto.flush(&mut writer).await?;
+                    } else {
+                        proto.write_null(&mut writer).await?;
+                        proto.flush(&mut writer).await?;
                     }
                 }
-            };
-
-            tracing::debug!(
-                session = %id,
-                "CLIENT_MESSAGE:::<{:?}>",
-                std::str::from_utf8(&buf).unwrap_or("unable to decode, invalid utf")
-            );
-
-            // TODO: Move protocol parsing to a separate type, and come up with a better format.
-            //       This is just enough to test sending commands from a client to a basic store.
-
-            // GET:3:KEY
-            // SET:3:KEY:5:VALUE
-            if buf.len() < 3 {
-                // pass
-            } else if &buf[0..3] == b"GET" {
-                tracing::info!("GET");
-                let mut i = 4;
-                let mut size = Vec::with_capacity(16);
-                while i < buf.len() && buf[i] != b':' {
-                    size.push(buf[i]);
-                    i += 1;
+                proto::ProtoOp::Set { key, value } => {
+                    self.store
+                        .transact(Transaction::with_random_id(vec![Operation::set(
+                            key,
+                            value.as_slice(),
+                        )]))
+                        .await
+                        .ok();
+                    proto.write_set_result(&mut writer, &value).await?;
+                    proto.flush(&mut writer).await?;
                 }
-                let size = match std::str::from_utf8(&size)
-                    .unwrap_or("unable to decode key len")
-                    .parse::<usize>()
-                {
-                    Ok(size) => size,
-                    Err(e) => {
-                        let s = format!("invalid key size: {e}\n");
-                        write_stream!(id, writer, s.as_bytes(), self.addr);
-                        continue 'read;
-                    }
-                };
-
-                i += 1;
-                let mut key = Vec::with_capacity(size);
-                while key.len() < size && i < buf.len() {
-                    key.push(buf[i]);
-                    i += 1;
-                }
-                let key = std::str::from_utf8(&key)
-                    .map_err(|e| format!("key {:?} is invalid utf: {e}", key))?;
-
-                tracing::info!("GET {key:?}");
-                let val = self.store.get(key).await.unwrap();
-                if let Some(mut val) = val {
-                    let prefix = format!("{}:", val.len());
-                    let mut prefix = prefix.as_bytes().to_vec();
-                    prefix.append(&mut val);
-                    prefix.push(b'\n');
-                    tracing::trace!("GET {key:?} {prefix:?}");
-                    write_stream!(id, writer, &prefix, self.addr);
-                } else {
-                    tracing::trace!("GET {key:?} null");
-                    write_stream!(id, writer, b"4:null\n", self.addr);
-                }
-                continue 'read;
-            } else if &buf[0..3] == b"SET" {
-                tracing::info!("SET");
-                let mut i = 4;
-                let mut size = Vec::with_capacity(16);
-                while i < buf.len() && buf[i] != b':' {
-                    size.push(buf[i]);
-                    i += 1;
-                }
-                let size = match std::str::from_utf8(&size)
-                    .unwrap_or("unable to decode key len")
-                    .parse::<usize>()
-                {
-                    Ok(size) => size,
-                    Err(e) => {
-                        let s = format!("invalid key size: {e}\n");
-                        write_stream!(id, writer, s.as_bytes(), self.addr);
-                        continue 'read;
-                    }
-                };
-
-                i += 1;
-                let mut key = Vec::with_capacity(size);
-                while key.len() < size && i < buf.len() {
-                    key.push(buf[i]);
-                    i += 1;
-                }
-                let key = std::str::from_utf8(&key)
-                    .map_err(|e| format!("key {:?} is invalid utf: {e}", key))?;
-
-                i += 1;
-                let mut size = Vec::with_capacity(16);
-                while i < buf.len() && buf[i] != b':' {
-                    size.push(buf[i]);
-                    i += 1;
-                }
-                let size = match std::str::from_utf8(&size)
-                    .unwrap_or("unable to decode key len")
-                    .parse::<usize>()
-                {
-                    Ok(size) => size,
-                    Err(e) => {
-                        let s = format!("invalid value size: {e}\n");
-                        write_stream!(id, writer, s.as_bytes(), self.addr);
-                        continue 'read;
-                    }
-                };
-
-                i += 1;
-                let mut val = Vec::with_capacity(size);
-                while val.len() < size && i < buf.len() {
-                    val.push(buf[i]);
-                    i += 1;
-                }
-
-                tracing::info!("SET {key:?}");
-                tracing::trace!("SET {key:?} {val:?}");
-                self.store
-                    .transact(Transaction::with_random_id(vec![Operation::set(
-                        key,
-                        val.as_slice(),
-                    )]))
-                    .await
-                    .ok();
-                let len_v = val.len().to_string();
-                let res = format!("2:ok:{}:{}\n", len_v.len(), len_v);
-                write_stream!(id, writer, res.as_bytes(), self.addr);
-                continue 'read;
             }
-            tracing::info!(session = %id, "no command found, echoing input");
-
-            writer
-                .write_all(&buf)
-                .await
-                .map_err(|e| format!("session={id} error writing to socket: {e}"))?;
-            writer
-                .flush()
-                .await
-                .map_err(|e| format!("session={id} error flusing stream: {e}"))?;
-            tracing::debug!(
-                session = %id,
-                "flushed {n} bytes to {peer_addr:?}",
-                peer_addr = self.addr
-            );
         }
-        Ok(())
     }
 }
 
@@ -293,12 +163,13 @@ impl<S: Store + Send + Sync + Clone + 'static> ClientServer<S> {
         >,
         acceptor: TlsAcceptor,
         store: S,
+        kill: Receiver<bool>,
     ) -> Result<()> {
         uuid_with_ident!(id);
         tracing::info!(session = id, "client connected");
         let (stream, peer_addr) =
             stream_peer_addr_res.map_err(|e| format!("session={id} error accepting tls: {e}"))?;
-        let conn = Connection::new(id.to_string(), stream, peer_addr, acceptor, store);
+        let conn = Connection::new(id.to_string(), stream, peer_addr, acceptor, store, kill);
         conn.handle().await
     }
 
@@ -316,25 +187,28 @@ impl<S: Store + Send + Sync + Clone + 'static> ClientServer<S> {
             .unwrap_or_else(|| get_config().get_client_addr());
         tracing::info!("listening for client requests on {addr}");
         let listener = TcpListener::bind(&addr).await?;
+        let (kill_send, _) = broadcast::channel(1);
 
         loop {
             tokio::select! {
                 _ = self.sig_shutdown_recv.recv() => {
                     tracing::info!("client-server received sigint shutdown signal");
+                    kill_send.send(true).expect("error broadcasting task kill");
                     break;
                 },
                 stream_peer_addr_res = listener.accept() => {
                     let acceptor = acceptor.clone();
                     let store = self.store.clone();
+                    let kill = kill_send.subscribe();
                     tokio::spawn(async move {
-                        if let Err(e) = Self::handle_conn(stream_peer_addr_res, acceptor, store).await {
+                        if let Err(e) = Self::handle_conn(stream_peer_addr_res, acceptor, store, kill).await {
                             tracing::error!("error handling client connection {e}");
                         }
                     });
                 },
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => {
-                    tracing::trace!("client-server slept 500ms...");
-                },
+                // _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => {
+                //     tracing::trace!("client-server slept 500ms...");
+                // },
             }
         }
         Ok(())
