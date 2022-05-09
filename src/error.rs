@@ -11,6 +11,9 @@ pub enum Error {
 
     #[error("bincode error: {0}")]
     BincodeError(#[from] bincode::Error),
+
+    #[error("timeout error: {0}")]
+    TimeoutError(#[from] tokio::time::error::Elapsed),
 }
 impl From<&str> for Error {
     fn from(s: &str) -> Error {
