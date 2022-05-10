@@ -46,7 +46,11 @@ async fn run() -> Result<()> {
         },
     };
 
-    futures::future::join_all(shutdown_confirmations).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        futures::future::join_all(shutdown_confirmations),
+    )
+    .await?;
 
     if !server_initiated_shutdown {
         tracing::info!("shutdown initiated, waiting for server shutdown signal");
