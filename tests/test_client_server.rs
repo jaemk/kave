@@ -1,7 +1,10 @@
+use std::time::Duration;
+
 use kave::server::{load_certs, load_keys, ClientServer};
 use kave::store::MemoryStore;
 use tokio::io::{split, AsyncWriteExt};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::time::sleep;
 
 #[macro_use]
 mod utils;
@@ -53,10 +56,7 @@ async fn test_client_server_basic() {
         .expect("error connecting to test addr");
     let (mut reader, mut writer) = split(stream);
 
-    writer
-        .write_all(b"ECHO:10:working!!!\n")
-        .await
-        .expect("error writing");
+    write_all!(writer, b"ECHO:10:working!!!\n");
 
     let buf = read_buf!(reader, 10);
     assert_eq!(std::str::from_utf8(&buf).unwrap(), "10:working!!!\n");
@@ -81,26 +81,70 @@ async fn test_client_server_get_set() {
     let (mut reader, mut writer) = split(stream);
 
     // get non existing key
-    writer
-        .write_all(b"GET:5:abcdef\n")
-        .await
-        .expect("error writing");
+    write_all!(writer, b"GET:5:abcdef\n");
     let buf = read_buf!(reader, 4);
     assert_eq!(std::str::from_utf8(&buf).unwrap(), "null\n");
 
     // set missing key
-    writer
-        .write_all(b"SET:5:abcde:30:012345678901234567890123456789-a-this-should-be-ignored\n")
-        .await
-        .expect("error writing");
+    write_all!(
+        writer,
+        b"SET:5:abcde:30:012345678901234567890123456789-a-this-should-be-ignored\n"
+    );
     let buf = read_buf!(reader, 4);
     assert_eq!(std::str::from_utf8(&buf).unwrap(), "2:30\n");
 
     // get previously set key
-    writer
-        .write_all(b"GET:5:abcde-b-this-should-be-ignored\n")
+    write_all!(writer, b"GET:5:abcde-b-this-should-be-ignored\n");
+    let buf = read_buf!(reader, 30 + 4);
+    assert_eq!(
+        std::str::from_utf8(&buf).unwrap(),
+        "30:012345678901234567890123456789\n"
+    );
+
+    // send shutdown and assert that it actually shuts down
+    shutdown_send
+        .send(true)
+        .expect("error sending client-server shutdown");
+    tokio::time::timeout(std::time::Duration::from_secs(5), shutdown_recv.recv())
         .await
-        .expect("error writing");
+        .expect("client-server failed to shutdown");
+}
+
+#[tokio::test]
+async fn test_client_server_partial_writes() {
+    init!();
+    let (shutdown_send, mut shutdown_recv) = start_client_server!("localhost:7312");
+
+    let stream = utils::connect("localhost:7312")
+        .await
+        .expect("error connecting to test addr");
+    let (mut reader, mut writer) = split(stream);
+
+    // get non existing key
+    write_all!(writer, b"GET:5:abc");
+    sleep(Duration::from_secs(1)).await;
+    write_all!(writer, b"def\n");
+    let buf = read_buf!(reader, 4);
+    assert_eq!(std::str::from_utf8(&buf).unwrap(), "null\n");
+
+    // set missing key
+    write_all!(writer, b"SET:");
+    sleep(Duration::from_millis(100)).await;
+    write_all!(writer, b"5:");
+    sleep(Duration::from_millis(100)).await;
+    write_all!(writer, b"abc");
+    sleep(Duration::from_millis(100)).await;
+    write_all!(writer, b"de:30:012345");
+    sleep(Duration::from_millis(100)).await;
+    write_all!(
+        writer,
+        b"678901234567890123456789-a-this-should-be-ignored\n"
+    );
+    let buf = read_buf!(reader, 4);
+    assert_eq!(std::str::from_utf8(&buf).unwrap(), "2:30\n");
+
+    // get previously set key
+    write_all!(writer, b"GET:5:abcde-b-this-should-be-ignored\n");
     let buf = read_buf!(reader, 30 + 4);
     assert_eq!(
         std::str::from_utf8(&buf).unwrap(),
