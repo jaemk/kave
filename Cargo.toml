@@ -68,6 +68,8 @@ itertools = "0.10.3"
 # byte array wrapper types
 # https://docs.rs/bytes/1.1.0
 bytes = "1.1.0"
+# https://docs.rs/trust-dns-resolver/latest/trust_dns_resolver/
+trust-dns-resolver = "0.21"
 
 [dev-dependencies]
 # map literal macros

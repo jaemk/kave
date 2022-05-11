@@ -5,8 +5,11 @@ use tokio_rustls::client::TlsStream;
 
 /// create a new tls stream to a given address
 pub async fn connect(addr: &str) -> Result<TlsStream<TcpStream>> {
+    let (addr, port) = addr
+        .split_once(':')
+        .expect("expected an `addr:port` string");
     let certs = load_certs("certs/defaults/cert.pem").expect("error loading default test certs");
-    client::connect(addr, certs).await
+    client::connect(addr, port.parse().expect("expected a u16 port"), certs).await
 }
 
 /// init logger and other stuff

@@ -14,6 +14,12 @@ pub enum Error {
 
     #[error("timeout error: {0}")]
     TimeoutError(#[from] tokio::time::error::Elapsed),
+
+    #[error("dns resolve error: {0}")]
+    DnsResolveError(#[from] trust_dns_resolver::error::ResolveError),
+
+    #[error("failure resolving dns for: {0}")]
+    DnsResolutionFailure(String),
 }
 impl From<&str> for Error {
     fn from(s: &str) -> Error {
