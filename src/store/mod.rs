@@ -51,7 +51,6 @@ pub trait Store {
     /// Returns all values with keys from `from` (inclusive) to `to` (exclusive).
     async fn scan(&mut self, from_inclusive: &str, to_exclusive: &str) -> Result<Vec<Vec<u8>>>;
     async fn transact(&mut self, transaction: Transaction) -> Result<()>;
-    async fn shutdown(&mut self) -> Result<()>;
 }
 
 /// A basic in memory store for testing
@@ -92,10 +91,6 @@ impl Store for MemoryStore {
                 Delete(key) => data.remove(&key.to_string()),
             };
         }
-        Ok(())
-    }
-
-    async fn shutdown(&mut self) -> Result<()> {
         Ok(())
     }
 }

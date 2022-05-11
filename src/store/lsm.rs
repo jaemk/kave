@@ -14,7 +14,7 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
 use uuid::Uuid;
 
 use self::commit_log::CommitLog;
@@ -27,6 +27,8 @@ use crate::Result;
 use crate::{utils, Config};
 
 type Shared<T> = Arc<RwLock<T>>;
+type ShutdownResponder<T> = oneshot::Sender<T>;
+type ShutdownReceiver<T> = mpsc::UnboundedReceiver<ShutdownResponder<T>>;
 
 // TODO what are the optimal values for these bloom filter parameters?
 const BLOOM_ERROR_PROB: f64 = 0.01;
@@ -42,11 +44,17 @@ pub struct LSMStore {
     bloom_map: Shared<HashMap<PathBuf, GrowableBloom>>,
     bloom_map_path: PathBuf,
     event_sender: broadcast::Sender<LSMEvent>,
+    shutdown_receiver: Shared<ShutdownReceiver<bool>>,
+    state: Shared<LSMState>,
 }
 
 struct LSMData {
     memtable: BTreeMap<String, Value>,
     tx_ids: Vec<Uuid>,
+}
+
+struct LSMState {
+    is_shutdown: bool,
 }
 
 /// Events published on the events channel exposed by the store
@@ -71,7 +79,12 @@ impl Value {
 }
 
 impl LSMStore {
-    fn new(data_dir: &Path, commit_log_path: &Path, memtable_max_bytes: usize) -> Self {
+    fn new(
+        data_dir: &Path,
+        commit_log_path: &Path,
+        memtable_max_bytes: usize,
+        shutdown_receiver: ShutdownReceiver<bool>,
+    ) -> Self {
         let commit_log = CommitLog::new(commit_log_path);
         let (event_tx, _) = broadcast::channel(8);
         Self {
@@ -85,14 +98,17 @@ impl LSMStore {
             bloom_map: Arc::new(RwLock::new(HashMap::new())),
             bloom_map_path: data_dir.join("bloom_map"),
             event_sender: event_tx,
+            shutdown_receiver: Arc::new(RwLock::new(shutdown_receiver)),
+            state: Arc::new(RwLock::new(LSMState { is_shutdown: false })),
         }
     }
 
-    fn from_config(config: &Config) -> Self {
+    fn from_config(config: &Config, shutdown_receiver: ShutdownReceiver<bool>) -> Self {
         Self::new(
             config.data_dir.as_path(),
             config.commit_log_path.as_path(),
             config.memtable_max_mb * 1_000_000,
+            shutdown_receiver,
         )
     }
 
@@ -100,8 +116,11 @@ impl LSMStore {
         self.event_sender.subscribe()
     }
 
-    pub async fn initialize_from_config(config: &Config) -> Result<Self> {
-        let mut store = Self::from_config(config);
+    pub async fn initialize_from_config(
+        config: &Config,
+        shutdown_receiver: ShutdownReceiver<bool>,
+    ) -> Result<Self> {
+        let mut store = Self::from_config(config, shutdown_receiver);
         store.initialize().await?;
         Ok(store)
     }
@@ -110,6 +129,21 @@ impl LSMStore {
         self.restore_bloom_map().await?;
         self.restore_previous_txs().await?;
         self.start_background_tasks();
+        Ok(())
+    }
+
+    async fn shutdown(
+        data: Shared<LSMData>,
+        data_dir: &Path,
+        bloom_map: Shared<HashMap<PathBuf, GrowableBloom>>,
+        bloom_map_path: &Path,
+        commit_log: Shared<CommitLog>,
+        state: Shared<LSMState>,
+    ) -> Result<()> {
+        let mut state = state.write().await;
+        state.is_shutdown = true;
+        Self::write_sstable(data.clone(), data_dir, bloom_map.clone(), commit_log).await?;
+        Self::write_bloom_map(bloom_map.clone(), bloom_map_path).await?;
         Ok(())
     }
 
@@ -159,13 +193,19 @@ impl LSMStore {
         let data = self.data.clone();
         let data_dir = self.data_dir.clone();
         let bloom_map = self.bloom_map.clone();
+        let bloom_map_path = self.bloom_map_path.clone();
         let commit_log = self.commit_log.clone();
         let memtable_max_bytes = self.memtable_max_bytes;
         let event_sender = self.event_sender.clone();
+        let state = self.state.clone();
+
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             loop {
                 interval.tick().await;
+                if state.read().await.is_shutdown {
+                    break;
+                };
                 if Self::should_flush_memtable(data.clone(), memtable_max_bytes)
                     .await
                     .expect("Failed to size memtable")
@@ -186,6 +226,32 @@ impl LSMStore {
                         tracing::debug!("Flushed memtable");
                     }
                 };
+            }
+        });
+
+        let data = self.data.clone();
+        let data_dir = self.data_dir.clone();
+        let bloom_map = self.bloom_map.clone();
+        let commit_log = self.commit_log.clone();
+        let state = self.state.clone();
+        let shutdown_rx = self.shutdown_receiver.clone();
+
+        tokio::spawn(async move {
+            let mut shutdown_rx = shutdown_rx.write().await;
+            if let Some(sender) = shutdown_rx.recv().await {
+                Self::shutdown(
+                    data.clone(),
+                    data_dir.as_path(),
+                    bloom_map.clone(),
+                    bloom_map_path.as_path(),
+                    commit_log.clone(),
+                    state.clone(),
+                )
+                .await
+                .expect("Failed to shut down properly");
+                sender
+                    .send(true)
+                    .expect("Failed to send shutdown confirmation");
             }
         });
         // TODO implement segment compaction
@@ -395,21 +461,6 @@ impl Store for LSMStore {
     async fn transact(&mut self, transaction: Transaction) -> Result<()> {
         self.do_transact(transaction, true).await
     }
-
-    async fn shutdown(&mut self) -> Result<()> {
-        let data = self.data.clone();
-        let commit_log = self.commit_log.clone();
-        let bloom_map = self.bloom_map.clone();
-        Self::write_sstable(
-            data.clone(),
-            self.data_dir.as_path(),
-            bloom_map.clone(),
-            commit_log,
-        )
-        .await?;
-        Self::write_bloom_map(bloom_map.clone(), self.bloom_map_path.as_path()).await?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -421,7 +472,7 @@ mod tests {
     };
 
     use assert_matches::assert_matches;
-    use tokio::{fs::DirBuilder, time::timeout};
+    use tokio::{fs::DirBuilder, sync::mpsc, time::timeout};
     use uuid::Uuid;
 
     use crate::{
@@ -438,10 +489,12 @@ mod tests {
     }
 
     fn setup_db(data_dir: &Path, memtable_max_bytes: usize) -> LSMStore {
+        let (_, rx) = mpsc::unbounded_channel();
         LSMStore::new(
             data_dir,
             data_dir.join("commit_log").as_path(),
             memtable_max_bytes,
+            rx,
         )
     }
 
@@ -511,7 +564,15 @@ mod tests {
                     (Operation::set("foo", b"bar")),
                 ]))
                 .await?;
-            store.shutdown().await?;
+            LSMStore::shutdown(
+                store.data.clone(),
+                store.data_dir.as_path(),
+                store.bloom_map.clone(),
+                store.bloom_map_path.as_path(),
+                store.commit_log.clone(),
+                store.state.clone(),
+            )
+            .await?;
         }
         let mut store = self::setup_db(data_dir.as_path(), 1000);
         store.initialize().await?;

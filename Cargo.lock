@@ -483,6 +483,7 @@ dependencies = [
  "chrono",
  "clap",
  "dotenv",
+ "futures",
  "growable-bloom-filter",
  "itertools",
  "lazy_static",
