@@ -49,7 +49,7 @@ macro_rules! start_client_server {
 #[tokio::test]
 async fn test_client_server_basic() {
     init!();
-    let (shutdown_send, mut shutdown_recv) = start_client_server!("localhost:7310");
+    let (shutdown_send, mut shutdown_recv) = start_client_server!("127.0.0.1:7310");
 
     let stream = utils::connect("localhost:7310")
         .await
@@ -57,7 +57,16 @@ async fn test_client_server_basic() {
     let (mut reader, mut writer) = split(stream);
 
     write_all!(writer, b"ECHO:10:working!!!\n");
+    let buf = read_buf!(reader, 10);
+    assert_eq!(std::str::from_utf8(&buf).unwrap(), "10:working!!!\n");
 
+    // also works connection to 127.0.0.1
+    let stream = utils::connect("127.0.0.1:7310")
+        .await
+        .expect("error connecting to test addr");
+    let (mut reader, mut writer) = split(stream);
+
+    write_all!(writer, b"ECHO:10:working!!!\n");
     let buf = read_buf!(reader, 10);
     assert_eq!(std::str::from_utf8(&buf).unwrap(), "10:working!!!\n");
 
@@ -73,7 +82,7 @@ async fn test_client_server_basic() {
 #[tokio::test]
 async fn test_client_server_get_set() {
     init!();
-    let (shutdown_send, mut shutdown_recv) = start_client_server!("localhost:7311");
+    let (shutdown_send, mut shutdown_recv) = start_client_server!("127.0.0.1:7311");
 
     let stream = utils::connect("localhost:7311")
         .await
@@ -113,7 +122,7 @@ async fn test_client_server_get_set() {
 #[tokio::test]
 async fn test_client_server_partial_writes() {
     init!();
-    let (shutdown_send, mut shutdown_recv) = start_client_server!("localhost:7312");
+    let (shutdown_send, mut shutdown_recv) = start_client_server!("127.0.0.1:7312");
 
     let stream = utils::connect("localhost:7312")
         .await

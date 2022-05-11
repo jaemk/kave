@@ -51,7 +51,7 @@ macro_rules! start_server {
 async fn test_cluster_server_basic_with_client_server() {
     init!();
     let (shutdown_send, mut shutdown_recv) =
-        start_server!("localhost:7411", Some("localhost:7412"));
+        start_server!("127.0.0.1:7411", Some("127.0.0.1:7412"));
 
     // talk to cluster server
     // --------------------------------------------------
@@ -93,7 +93,7 @@ async fn test_cluster_server_basic_with_client_server() {
 #[tokio::test]
 async fn test_cluster_server_basic_without_client_server() {
     init!();
-    let (shutdown_send, mut shutdown_recv) = start_server!("localhost:7421");
+    let (shutdown_send, mut shutdown_recv) = start_server!("127.0.0.1:7421");
 
     // talk to cluster server
     // --------------------------------------------------
